@@ -15,7 +15,6 @@ package main
 
 import (
 	"context"
-	"io"
 	"log"
 	"regexp"
 	"slices"
@@ -282,6 +281,9 @@ func (e *PostfixExporter) collectVirtualLog(line, remainder, level string) {
 
 // CollectFromLogline collects metrict from a Postfix log line.
 func (e *PostfixExporter) CollectFromLogLine(line string) {
+	if line == "" {
+		return
+	}
 	// Strip off timestamp, hostname, etc.
 	logMatches := logLine.FindStringSubmatch(line)
 
@@ -665,10 +667,10 @@ func (e *PostfixExporter) StartMetricCollection(ctx context.Context) {
 	for {
 		line, err := e.logSrc.Read(ctx)
 		if err != nil {
-			if err != io.EOF {
+			if err != SystemdNoMoreEntries {
 				log.Printf("Couldn't read journal: %v", err)
+				return
 			}
-			return
 		}
 		e.CollectFromLogLine(line)
 		gauge.Set(1)
