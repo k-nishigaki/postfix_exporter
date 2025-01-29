@@ -404,9 +404,9 @@ func (e *PostfixExporter) CollectFromLogLine(line string) {
 			} else if smtpdLostConnectionMatches := smtpdLostConnectionLine.FindStringSubmatch(remainder); smtpdLostConnectionMatches != nil {
 				e.smtpdLostConnections.WithLabelValues(smtpdLostConnectionMatches[1]).Inc()
 			} else if smtpdProcessesSASLMatches := smtpdProcessesSASLLine.FindStringSubmatch(remainder); smtpdProcessesSASLMatches != nil {
-				e.smtpdProcesses.WithLabelValues(smtpdProcessesSASLMatches[1]).Inc()
+				e.smtpdProcesses.WithLabelValues(strings.Replace(smtpdProcessesSASLMatches[1],",","",-1)).Inc()
 			} else if strings.Contains(remainder, ": client=") {
-				e.smtpdProcesses.WithLabelValues("").Inc()
+				e.smtpdProcesses.WithLabelValues("NONE").Inc()
 			} else if smtpdRejectsMatches := smtpdRejectsLine.FindStringSubmatch(remainder); smtpdRejectsMatches != nil {
 				e.smtpdRejects.WithLabelValues(smtpdRejectsMatches[1]).Inc()
 			} else if smtpdSASLAuthenticationFailuresLine.MatchString(remainder) {
