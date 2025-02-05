@@ -3,11 +3,11 @@ BINDIR = $(shell pwd)/bin
 
 .PHONY: libsystemd-dev
 libsystemd-dev:
-	@dpkg -s $@ >/dev/null 2>&1 || sudo apt-get install -y --no-install-recommends $@
+	@dpkg -s $@ >/dev/null 2>&1 || sudo apt-get update && sudo apt-get install -y --no-install-recommends $@
 
 .PHONY: gcc-aarch64-linux-gnu
 gcc-aarch64-linux-gnu:
-	@dpkg -s $@ >/dev/null 2>&1 || sudo apt-get install -y $@
+	@dpkg -s $@ >/dev/null 2>&1 || sudo apt-get update && sudo apt-get install -y $@
 
 .PHONY: test
 test: libsystemd-dev
