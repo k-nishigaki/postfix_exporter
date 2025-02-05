@@ -11,18 +11,30 @@ updates:
     groups:
       docker:
         patterns:
-          - "^github.com/containerd/.*"
-          - "^github.com/distribution/.*"
-          - "^github.com/docker/.*"
-          - "^github.com/moby/.*"
-          - "^github.com/opencontainers/.*"
+          - "^github.com/containerd/*"
+          - "^github.com/distribution/*"
+          - "^github.com/docker/*"
+          - "^github.com/moby/*"
+          - "^github.com/opencontainers/*"
       otel:
         patterns:
-          - "^github.com/prometheus/.*"
+          - "^github.com/prometheus/*"
           - "^go.opentelemetry.io/*"
       golang:
         patterns:
-          - "^golang.org/x/.*"
+          - "^golang.org/x/*"
+      other:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "^github.com/containerd/*"
+          - "^github.com/distribution/*"
+          - "^github.com/docker/*"
+          - "^github.com/moby/*"
+          - "^github.com/opencontainers/*"
+          - "^github.com/prometheus/*"
+          - "^go.opentelemetry.io/*"
+          - "^golang.org/x/*"
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
