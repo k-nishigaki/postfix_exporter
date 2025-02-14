@@ -1,3 +1,9 @@
+[![GitHub release](https://img.shields.io/github/release/hsn723/postfix_exporter.svg?sort=semver&maxAge=60)](https://github.com/hsn723/postfix_exporter/releases)
+[![main](https://github.com/Hsn723/postfix_exporter/actions/workflows/main.yml/badge.svg?branch=master)](https://github.com/Hsn723/postfix_exporter/actions/workflows/main.yml)
+[![PkgGoDev](https://pkg.go.dev/badge/github.com/hsn723/postfix_exporter?tab=overview)](https://pkg.go.dev/github.com/hsn723/postfix_exporter?tab=overview)
+[![Go Report Card](https://goreportcard.com/badge/github.com/hsn723/postfix_exporter)](https://goreportcard.com/report/github.com/hsn723/postfix_exporter)
+![GitHub go.mod Go version](https://img.shields.io/github/go-mod/go-version/hsn723/postfix_exporter)
+
 # Prometheus Postfix exporter
 
 Prometheus metrics exporter for [the Postfix mail server](http://www.postfix.org/).
