@@ -14,3 +14,4 @@ repos:
         args: ["--fix=lf"]
 ci:
   autofix_prs: false
+  skip: [golangci-lint, check-merge-conflict, check-yaml, end-of-file-fixer, mixed-line-ending]
