@@ -1,5 +1,6 @@
 LDFLAGS = -ldflags "-s -w"
 BINDIR = $(shell pwd)/bin
+YQ = $(BINDIR)/yq
 
 .PHONY: libsystemd-dev
 libsystemd-dev:
@@ -32,5 +33,9 @@ $(CONTAINER_STRUCTURE_TEST): $(BINDIR)
 	curl -sSLf -o $(CONTAINER_STRUCTURE_TEST) https://storage.googleapis.com/container-structure-test/latest/container-structure-test-linux-amd64 && chmod +x $(CONTAINER_STRUCTURE_TEST)
 
 .PHONY: container-structure-test
-container-structure-test: $(CONTAINER_STRUCTURE_TEST)
-	printf "amd64\narm64" | xargs -n1 -I {} $(CONTAINER_STRUCTURE_TEST) test --image ghcr.io/hsn723/postfix_exporter:$(shell git describe --tags --abbrev=0 --match "v*" || echo v0.0.0)-next-{} --config cst.yaml
+container-structure-test: $(CONTAINER_STRUCTURE_TEST) $(YQ)
+	$(YQ) '.builds[] | select(.id == "default") | .goarch[]' .goreleaser.yml | xargs -I {} $(CONTAINER_STRUCTURE_TEST) test --image ghcr.io/hsn723/postfix_exporter:$(shell git describe --tags --abbrev=0 --match "v*" || echo v0.0.0)-next-{} --config cst.yaml
+
+.PHONY: $(YQ)
+$(YQ): $(BINDIR)
+	GOBIN=$(BINDIR) go install github.com/mikefarah/yq/v4@latest

@@ -15,7 +15,7 @@ var defaultConfig = tail.Config{
 	Follow:    true,                               // run in follow mode
 	Location:  &tail.SeekInfo{Whence: io.SeekEnd}, // seek to end of file
 	Logger:    tail.DiscardingLogger,
-	}
+}
 
 // A FileLogSource can read lines from a file.
 type FileLogSource struct {

@@ -45,21 +45,21 @@ type PostfixExporter struct {
 	logUnsupportedLines bool
 
 	// Metrics that should persist after refreshes, based on logs.
-	cleanupProcesses                prometheus.Counter
-	cleanupRejects                  prometheus.Counter
-	cleanupNotAccepted              prometheus.Counter
-	lmtpDelays                      *prometheus.HistogramVec
-	pipeDelays                      *prometheus.HistogramVec
-	qmgrInsertsNrcpt                prometheus.Histogram
-	qmgrInsertsSize                 prometheus.Histogram
-	qmgrRemoves                     prometheus.Counter
-	qmgrExpires                     prometheus.Counter
-	smtpDelays                      *prometheus.HistogramVec
-	smtpTLSConnects                 *prometheus.CounterVec
-	smtpConnectionTimedOut          prometheus.Counter
-	smtpProcesses                    *prometheus.CounterVec
-	smtpDeferredDSN                 *prometheus.CounterVec
-	smtpBouncedDSN                  *prometheus.CounterVec
+	cleanupProcesses       prometheus.Counter
+	cleanupRejects         prometheus.Counter
+	cleanupNotAccepted     prometheus.Counter
+	lmtpDelays             *prometheus.HistogramVec
+	pipeDelays             *prometheus.HistogramVec
+	qmgrInsertsNrcpt       prometheus.Histogram
+	qmgrInsertsSize        prometheus.Histogram
+	qmgrRemoves            prometheus.Counter
+	qmgrExpires            prometheus.Counter
+	smtpDelays             *prometheus.HistogramVec
+	smtpTLSConnects        *prometheus.CounterVec
+	smtpConnectionTimedOut prometheus.Counter
+	smtpProcesses          *prometheus.CounterVec
+	smtpDeferredDSN        *prometheus.CounterVec
+	smtpBouncedDSN         *prometheus.CounterVec
 	// should be the same as smtpProcesses{status=deferred}, kept for compatibility, but this doesn't work !
 	smtpDeferreds                   prometheus.Counter
 	smtpdConnects                   prometheus.Counter
@@ -72,10 +72,10 @@ type PostfixExporter struct {
 	smtpdTLSConnects                *prometheus.CounterVec
 	unsupportedLogEntries           *prometheus.CounterVec
 	// same as smtpProcesses{status=deferred}, kept for compatibility
-	smtpStatusDeferred              prometheus.Counter
-	opendkimSignatureAdded          *prometheus.CounterVec
-	bounceNonDelivery               prometheus.Counter
-	virtualDelivered                prometheus.Counter
+	smtpStatusDeferred     prometheus.Counter
+	opendkimSignatureAdded *prometheus.CounterVec
+	bounceNonDelivery      prometheus.Counter
+	virtualDelivered       prometheus.Counter
 }
 
 // A LogSource is an interface to read log lines.
@@ -404,7 +404,7 @@ func (e *PostfixExporter) CollectFromLogLine(line string) {
 			} else if smtpdLostConnectionMatches := smtpdLostConnectionLine.FindStringSubmatch(remainder); smtpdLostConnectionMatches != nil {
 				e.smtpdLostConnections.WithLabelValues(smtpdLostConnectionMatches[1]).Inc()
 			} else if smtpdProcessesSASLMatches := smtpdProcessesSASLLine.FindStringSubmatch(remainder); smtpdProcessesSASLMatches != nil {
-				e.smtpdProcesses.WithLabelValues(strings.Replace(smtpdProcessesSASLMatches[1],",","",-1)).Inc()
+				e.smtpdProcesses.WithLabelValues(strings.Replace(smtpdProcessesSASLMatches[1], ",", "", -1)).Inc()
 			} else if strings.Contains(remainder, ": client=") {
 				e.smtpdProcesses.WithLabelValues("NONE").Inc()
 			} else if smtpdRejectsMatches := smtpdRejectsLine.FindStringSubmatch(remainder); smtpdRejectsMatches != nil {
