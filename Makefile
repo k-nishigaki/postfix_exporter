@@ -34,7 +34,7 @@ $(CONTAINER_STRUCTURE_TEST): $(BINDIR)
 
 .PHONY: container-structure-test
 container-structure-test: $(CONTAINER_STRUCTURE_TEST) $(YQ)
-	$(YQ) '.builds[] | select(.id == "default") | .goarch[]' .goreleaser.yml | xargs -I {} $(CONTAINER_STRUCTURE_TEST) test --image ghcr.io/hsn723/postfix_exporter:$(shell git describe --tags --abbrev=0 --match "v*" || echo v0.0.0)-next-{} --config cst.yaml
+	$(YQ) '.builds[] | select(.id == "default") | .goarch[]' .goreleaser.yml | xargs -I {} $(CONTAINER_STRUCTURE_TEST) test --image ghcr.io/hsn723/postfix_exporter:$(shell git describe --tags --abbrev=0 --match "v*" || echo v0.0.0)-next-{} --platform linux/{} --config cst.yaml
 
 .PHONY: $(YQ)
 $(YQ): $(BINDIR)
