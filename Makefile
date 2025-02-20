@@ -30,7 +30,7 @@ $(BINDIR):
 CONTAINER_STRUCTURE_TEST = $(BINDIR)/container-structure-test
 .PHONY: $(CONTAINER_STRUCTURE_TEST)
 $(CONTAINER_STRUCTURE_TEST): $(BINDIR)
-	curl -sSLf -o $(CONTAINER_STRUCTURE_TEST) https://storage.googleapis.com/container-structure-test/latest/container-structure-test-linux-amd64 && chmod +x $(CONTAINER_STRUCTURE_TEST)
+	curl -sSLf -o $(CONTAINER_STRUCTURE_TEST) https://github.com/GoogleContainerTools/container-structure-test/releases/latest/download/container-structure-test-linux-amd64 && chmod +x $(CONTAINER_STRUCTURE_TEST)
 
 .PHONY: container-structure-test
 container-structure-test: $(CONTAINER_STRUCTURE_TEST) $(YQ)
