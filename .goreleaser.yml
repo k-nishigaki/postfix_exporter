@@ -87,18 +87,18 @@ docker_manifests:
       - "ghcr.io/hsn723/{{.ProjectName}}:{{ .Version }}-arm64"
 archives:
   - id: default
-    builds:
+    ids:
       - default
   - id: with-docker
-    builds:
+    ids:
       - with-docker
     name_template: "{{ .ProjectName }}_docker_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
   - id: with-systemd
-    builds:
+    ids:
       - with-systemd
     name_template: "{{ .ProjectName }}_systemd_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
   - id: aio
-    builds:
+    ids:
       - aio
     name_template: "{{ .ProjectName }}_aio_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 checksum:
