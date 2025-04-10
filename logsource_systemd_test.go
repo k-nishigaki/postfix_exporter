@@ -101,15 +101,14 @@ func TestMain(m *testing.M) {
 }
 
 type fakeSystemdJournal struct {
-	getEntryValues []sdjournal.JournalEntry
-	getEntryError  error
-	nextValues     []uint64
-	nextError      error
-
+	getEntryError         error
+	nextError             error
+	getEntryValues        []sdjournal.JournalEntry
+	nextValues            []uint64
 	addMatchCalls         []string
-	closeCalls            int
 	seekRealtimeUsecCalls []uint64
 	waitCalls             []time.Duration
+	closeCalls            int
 }
 
 func (j *fakeSystemdJournal) AddMatch(match string) error {

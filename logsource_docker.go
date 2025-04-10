@@ -19,8 +19,8 @@ import (
 // journal.
 type DockerLogSource struct {
 	client      DockerClient
-	containerID string
 	reader      *bufio.Reader
+	containerID string
 }
 
 // A DockerClient is the client interface that client.Client
@@ -70,8 +70,8 @@ func (s *DockerLogSource) Read(ctx context.Context) (string, error) {
 // A dockerLogSourceFactory is a factory that can create
 // DockerLogSources from command line flags.
 type dockerLogSourceFactory struct {
-	enable      bool
 	containerID string
+	enable      bool
 }
 
 func (f *dockerLogSourceFactory) Init(app *kingpin.Application) {
@@ -85,7 +85,7 @@ func (f *dockerLogSourceFactory) New(ctx context.Context) (LogSourceCloser, erro
 	}
 
 	log.Println("Reading log events from Docker")
-	c, err := client.NewEnvClient()
+	c, err := client.NewClientWithOpts(client.FromEnv)
 	if err != nil {
 		return nil, err
 	}

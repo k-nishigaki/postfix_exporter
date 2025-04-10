@@ -8,6 +8,7 @@ linters:
     - goconst
     - gocyclo
     - godot
+    - govet
     - revive
     - unparam
   settings:
@@ -15,6 +16,9 @@ linters:
       rules:
         - name: dot-imports
           disabled: true
+    govet:
+      enable:
+        - fieldalignment
   exclusions:
     generated: lax
     presets:

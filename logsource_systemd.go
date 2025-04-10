@@ -102,8 +102,8 @@ func (s *SystemdLogSource) Read(ctx context.Context) (string, error) {
 // A systemdLogSourceFactory is a factory that can create
 // SystemdLogSources from command line flags.
 type systemdLogSourceFactory struct {
-	enable            bool
 	unit, slice, path string
+	enable            bool
 }
 
 func (f *systemdLogSourceFactory) Init(app *kingpin.Application) {

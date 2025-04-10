@@ -41,50 +41,61 @@ var (
 // PostfixExporter holds the state that should be preserved by the
 // Postfix Prometheus metrics exporter across scrapes.
 type PostfixExporter struct {
-	cleanupLabels       []string
-	lmtpLabels          []string
-	pipeLabels          []string
-	qmgrLabels          []string
-	smtpLabels          []string
-	smtpdLabels         []string
-	bounceLabels        []string
-	virtualLabels       []string
-	showqPath           string
-	logSrc              LogSource
-	logUnsupportedLines bool
+	qmgrInsertsSize   prometheus.Histogram
+	virtualDelivered  prometheus.Counter
+	bounceNonDelivery prometheus.Counter
 
-	// Metrics that should persist after refreshes, based on logs.
-	cleanupProcesses       prometheus.Counter
-	cleanupRejects         prometheus.Counter
-	cleanupNotAccepted     prometheus.Counter
-	lmtpDelays             *prometheus.HistogramVec
-	pipeDelays             *prometheus.HistogramVec
-	qmgrInsertsNrcpt       prometheus.Histogram
-	qmgrInsertsSize        prometheus.Histogram
-	qmgrRemoves            prometheus.Counter
-	qmgrExpires            prometheus.Counter
-	smtpDelays             *prometheus.HistogramVec
-	smtpTLSConnects        *prometheus.CounterVec
 	smtpConnectionTimedOut prometheus.Counter
-	smtpProcesses          *prometheus.CounterVec
-	smtpDeferredDSN        *prometheus.CounterVec
-	smtpBouncedDSN         *prometheus.CounterVec
-	// should be the same as smtpProcesses{status=deferred}, kept for compatibility, but this doesn't work !
-	smtpDeferreds                   prometheus.Counter
-	smtpdConnects                   prometheus.Counter
-	smtpdDisconnects                prometheus.Counter
-	smtpdFCrDNSErrors               prometheus.Counter
-	smtpdLostConnections            *prometheus.CounterVec
-	smtpdProcesses                  *prometheus.CounterVec
-	smtpdRejects                    *prometheus.CounterVec
-	smtpdSASLAuthenticationFailures prometheus.Counter
-	smtpdTLSConnects                *prometheus.CounterVec
-	unsupportedLogEntries           *prometheus.CounterVec
 	// same as smtpProcesses{status=deferred}, kept for compatibility
-	smtpStatusDeferred     prometheus.Counter
+	smtpStatusDeferred prometheus.Counter
+	// should be the same as smtpProcesses{status=deferred}, kept for compatibility, but this doesn't work !
+	smtpDeferreds prometheus.Counter
+
+	smtpdSASLAuthenticationFailures prometheus.Counter
+	smtpdFCrDNSErrors               prometheus.Counter
+	smtpdDisconnects                prometheus.Counter
+	smtpdConnects                   prometheus.Counter
+
+	cleanupProcesses   prometheus.Counter
+	cleanupRejects     prometheus.Counter
+	cleanupNotAccepted prometheus.Counter
+
+	qmgrExpires      prometheus.Counter
+	qmgrRemoves      prometheus.Counter
+	qmgrInsertsNrcpt prometheus.Histogram
+
+	logSrc LogSource
+
+	smtpdLostConnections *prometheus.CounterVec
+	smtpDeferredDSN      *prometheus.CounterVec
+	smtpdProcesses       *prometheus.CounterVec
+	smtpdRejects         *prometheus.CounterVec
+	smtpdTLSConnects     *prometheus.CounterVec
+
+	lmtpDelays *prometheus.HistogramVec
+	pipeDelays *prometheus.HistogramVec
+
+	smtpDelays      *prometheus.HistogramVec
+	smtpTLSConnects *prometheus.CounterVec
+	smtpBouncedDSN  *prometheus.CounterVec
+	smtpProcesses   *prometheus.CounterVec
+
 	opendkimSignatureAdded *prometheus.CounterVec
-	bounceNonDelivery      prometheus.Counter
-	virtualDelivered       prometheus.Counter
+
+	unsupportedLogEntries *prometheus.CounterVec
+
+	showqPath string
+
+	bounceLabels  []string
+	cleanupLabels []string
+	smtpLabels    []string
+	smtpdLabels   []string
+	virtualLabels []string
+	qmgrLabels    []string
+	pipeLabels    []string
+	lmtpLabels    []string
+
+	logUnsupportedLines bool
 }
 
 // ServiceLabel is a function to apply user-defined service labels to PostfixExporter.
@@ -416,7 +427,7 @@ func (e *PostfixExporter) CollectFromLogLine(line string) {
 			} else if smtpdLostConnectionMatches := smtpdLostConnectionLine.FindStringSubmatch(remainder); smtpdLostConnectionMatches != nil {
 				e.smtpdLostConnections.WithLabelValues(smtpdLostConnectionMatches[1]).Inc()
 			} else if smtpdProcessesSASLMatches := smtpdProcessesSASLLine.FindStringSubmatch(remainder); smtpdProcessesSASLMatches != nil {
-				e.smtpdProcesses.WithLabelValues(strings.Replace(smtpdProcessesSASLMatches[1], ",", "", -1)).Inc()
+				e.smtpdProcesses.WithLabelValues(strings.ReplaceAll(smtpdProcessesSASLMatches[1], ",", "")).Inc()
 			} else if strings.Contains(remainder, ": client=") {
 				e.smtpdProcesses.WithLabelValues("NONE").Inc()
 			} else if smtpdRejectsMatches := smtpdRejectsLine.FindStringSubmatch(remainder); smtpdRejectsMatches != nil {

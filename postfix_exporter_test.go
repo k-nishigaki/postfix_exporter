@@ -19,38 +19,39 @@ func stringPtr(s string) *string {
 
 func TestPostfixExporter_CollectFromLogline(t *testing.T) {
 	type fields struct {
-		showqPath                       string
-		logSrc                          LogSource
+		smtpStatusDeferred              prometheus.Counter
+		smtpdDisconnects                prometheus.Counter
 		cleanupProcesses                prometheus.Counter
 		cleanupRejects                  prometheus.Counter
 		cleanupNotAccepted              prometheus.Counter
-		lmtpDelays                      *prometheus.HistogramVec
-		pipeDelays                      *prometheus.HistogramVec
+		virtualDelivered                prometheus.Counter
+		bounceNonDelivery               prometheus.Counter
 		qmgrInsertsNrcpt                prometheus.Histogram
 		qmgrInsertsSize                 prometheus.Histogram
 		qmgrRemoves                     prometheus.Counter
 		qmgrExpires                     prometheus.Counter
-		smtpDelays                      *prometheus.HistogramVec
-		smtpTLSConnects                 *prometheus.CounterVec
-		smtpDeferreds                   prometheus.Counter
-		smtpStatusDeferred              prometheus.Counter
-		smtpProcesses                   *prometheus.CounterVec
-		smtpDeferredDSN                 *prometheus.CounterVec
-		smtpBouncedDSN                  *prometheus.CounterVec
-		smtpdConnects                   prometheus.Counter
-		smtpdDisconnects                prometheus.Counter
-		smtpdFCrDNSErrors               prometheus.Counter
-		smtpdLostConnections            *prometheus.CounterVec
-		smtpdProcesses                  *prometheus.CounterVec
-		smtpdRejects                    *prometheus.CounterVec
 		smtpdSASLAuthenticationFailures prometheus.Counter
+		smtpdFCrDNSErrors               prometheus.Counter
+		smtpDeferreds                   prometheus.Counter
+		logSrc                          LogSource
+		smtpdConnects                   prometheus.Counter
+		lmtpDelays                      *prometheus.HistogramVec
+		smtpBouncedDSN                  *prometheus.CounterVec
+		smtpDeferredDSN                 *prometheus.CounterVec
+		smtpProcesses                   *prometheus.CounterVec
+		smtpTLSConnects                 *prometheus.CounterVec
+		smtpdRejects                    *prometheus.CounterVec
+		smtpdLostConnections            *prometheus.CounterVec
+		smtpDelays                      *prometheus.HistogramVec
 		smtpdTLSConnects                *prometheus.CounterVec
-		bounceNonDelivery               prometheus.Counter
-		virtualDelivered                prometheus.Counter
+		pipeDelays                      *prometheus.HistogramVec
+		smtpdProcesses                  *prometheus.CounterVec
 		unsupportedLogEntries           *prometheus.CounterVec
+		showqPath                       string
 	}
 	type args struct {
 		line                   []string
+		unsupportedLogEntries  []testCounterMetric
 		removedCount           int
 		expiredCount           int
 		saslFailedCount        int
@@ -61,13 +62,12 @@ func TestPostfixExporter_CollectFromLogline(t *testing.T) {
 		smtpBounced            int
 		bounceNonDelivery      int
 		virtualDelivered       int
-		unsupportedLogEntries  []testCounterMetric
 	}
 	tests := []struct {
+		serviceLabels []ServiceLabel
 		name          string
 		fields        fields
 		args          args
-		serviceLabels []ServiceLabel
 	}{
 		{
 			name: "Single line",
@@ -399,15 +399,14 @@ func TestPostfixExporter_CollectFromLogline(t *testing.T) {
 func assertCounterEquals(t *testing.T, counter prometheus.Collector, expected int, message string) {
 
 	if counter != nil && expected > 0 {
-		switch counter.(type) {
+		switch counter := counter.(type) {
 		case *prometheus.CounterVec:
-			counter := counter.(*prometheus.CounterVec)
 			metricsChan := make(chan prometheus.Metric)
 			go func() {
 				counter.Collect(metricsChan)
 				close(metricsChan)
 			}()
-			var count int = 0
+			var count = 0
 			for metric := range metricsChan {
 				metricDto := io_prometheus_client.Metric{}
 				_ = metric.Write(&metricDto)
@@ -420,7 +419,7 @@ func assertCounterEquals(t *testing.T, counter prometheus.Collector, expected in
 				counter.Collect(metricsChan)
 				close(metricsChan)
 			}()
-			var count int = 0
+			var count = 0
 			for metric := range metricsChan {
 				metricDto := io_prometheus_client.Metric{}
 				_ = metric.Write(&metricDto)
