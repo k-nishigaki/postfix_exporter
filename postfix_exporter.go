@@ -188,11 +188,14 @@ func CollectTextualShowqFromScanner(sizeHistogram prometheus.ObserverVec, ageHis
 		dateMatch := matches[3]
 
 		// Derive the name of the message queue.
-		queue := "other"
-		if queueMatch == "*" {
+		var queue string
+		switch queueMatch {
+		case "*":
 			queue = "active"
-		} else if queueMatch == "!" {
+		case "!":
 			queue = "hold"
+		default:
+			queue = "other"
 		}
 
 		// Parse the message size.
@@ -229,7 +232,7 @@ func ScanNullTerminatedEntries(data []byte, atEOF bool) (advance int, token []by
 		return i + 1, data[0:i], nil
 	} else if atEOF && len(data) != 0 {
 		// Data at the end of the file without a null terminator.
-		return 0, nil, errors.New("Expected null byte terminator")
+		return 0, nil, errors.New("expected null byte terminator")
 	} else {
 		// Request more data.
 		return 0, nil, nil
@@ -280,17 +283,18 @@ func CollectBinaryShowqFromReader(file io.Reader, ch chan<- prometheus.Metric) e
 		}
 		value := scanner.Text()
 
-		if key == "queue_name" {
+		switch key {
+		case "queue_name":
 			// The name of the message queue.
 			queue = value
-		} else if key == "size" {
+		case "size":
 			// Message size in bytes.
 			size, err := strconv.ParseFloat(value, 64)
 			if err != nil {
 				return err
 			}
 			sizeHistogram.WithLabelValues(queue).Observe(size)
-		} else if key == "time" {
+		case "time":
 			// Message time as a UNIX timestamp.
 			utime, err := strconv.ParseFloat(value, 64)
 			if err != nil {
@@ -399,12 +403,13 @@ func (e *PostfixExporter) CollectFromLogLine(line string) {
 				if smtpStatusMatches := smtpStatusLine.FindStringSubmatch(remainder); smtpStatusMatches != nil {
 					e.smtpProcesses.WithLabelValues(smtpStatusMatches[1]).Inc()
 					dsnMatches := smtpDSNLine.FindStringSubmatch(remainder)
-					if smtpStatusMatches[1] == "deferred" {
+					switch smtpStatusMatches[1] {
+					case "deferred":
 						e.smtpStatusDeferred.Inc()
 						if dsnMatches != nil {
 							e.smtpDeferredDSN.WithLabelValues(dsnMatches[1]).Inc()
 						}
-					} else if smtpStatusMatches[1] == "bounced" {
+					case "bounced":
 						if dsnMatches != nil {
 							e.smtpBouncedDSN.WithLabelValues(dsnMatches[1]).Inc()
 						}
