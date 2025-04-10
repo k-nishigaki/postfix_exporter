@@ -64,9 +64,10 @@ func TestPostfixExporter_CollectFromLogline(t *testing.T) {
 		unsupportedLogEntries  []testCounterMetric
 	}
 	tests := []struct {
-		name   string
-		fields fields
-		args   args
+		name          string
+		fields        fields
+		args          args
+		serviceLabels []ServiceLabel
 	}{
 		{
 			name: "Single line",
@@ -299,10 +300,51 @@ func TestPostfixExporter_CollectFromLogline(t *testing.T) {
 				unsupportedLogEntries: prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"service", "level"}),
 			},
 		},
+		{
+			name: "User-defined service labels",
+			args: args{
+				line: []string{
+					"Feb 11 16:49:24 letterman postfix/relay/smtp[8204]: AAB4D259B1: to=<me@example.net>, relay=example.com[127.0.0.1]:25, delay=0.1, delays=0.1/0/0/0, dsn=2.0.0, status=sent (250 2.0.0 Ok: queued as AAB4D259B1)",
+					"Feb 11 16:49:24 letterman postfix/smtp[8204]: AAB4D259B1: to=<ignoreme@example.net>, relay=example.com[127.0.0.1]:25, delay=0.1, delays=0.1/0/0/0, dsn=2.0.0, status=sent (250 2.0.0 Ok: queued as AAB4D259B1)",
+				},
+				smtpMessagesProcessed: 1,
+				unsupportedLogEntries: []testCounterMetric{
+					{
+						Label: []*io_prometheus_client.LabelPair{
+							{
+								Name:  stringPtr("level"),
+								Value: stringPtr(""),
+							},
+							{
+								Name:  stringPtr("service"),
+								Value: stringPtr("smtp"),
+							},
+						},
+						CounterValue: 1,
+					},
+				},
+			},
+			fields: fields{
+				smtpProcesses:         prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"status"}),
+				smtpDelays:            prometheus.NewHistogramVec(prometheus.HistogramOpts{}, []string{"stage"}),
+				unsupportedLogEntries: prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"service", "level"}),
+			},
+			serviceLabels: []ServiceLabel{
+				WithSmtpLabels([]string{"relay/smtp"}),
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			e := &PostfixExporter{
+				cleanupLabels:                   defaultCleanupLabels,
+				lmtpLabels:                      defaultLmtpLabels,
+				pipeLabels:                      defaultPipeLabels,
+				qmgrLabels:                      defaultQmgrLabels,
+				smtpLabels:                      defaultSmtpLabels,
+				smtpdLabels:                     defaultSmtpdLabels,
+				bounceLabels:                    defaultBounceLabels,
+				virtualLabels:                   defaultVirtualLabels,
 				showqPath:                       tt.fields.showqPath,
 				logSrc:                          tt.fields.logSrc,
 				cleanupProcesses:                tt.fields.cleanupProcesses,
@@ -333,6 +375,9 @@ func TestPostfixExporter_CollectFromLogline(t *testing.T) {
 				virtualDelivered:                tt.fields.virtualDelivered,
 				unsupportedLogEntries:           tt.fields.unsupportedLogEntries,
 				logUnsupportedLines:             true,
+			}
+			for _, serviceLabel := range tt.serviceLabels {
+				serviceLabel(e)
 			}
 			for _, line := range tt.args.line {
 				e.CollectFromLogLine(line)
