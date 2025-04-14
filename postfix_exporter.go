@@ -14,20 +14,16 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"errors"
-	"fmt"
 	"io"
 	"log"
-	"net"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
-	"time"
+	"sync"
 
+	"github.com/hsn723/postfix_exporter/showq"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -84,6 +80,7 @@ type PostfixExporter struct {
 
 	unsupportedLogEntries *prometheus.CounterVec
 
+	showq     *showq.Showq
 	showqPath string
 
 	bounceLabels  []string
@@ -94,6 +91,8 @@ type PostfixExporter struct {
 	qmgrLabels    []string
 	pipeLabels    []string
 	lmtpLabels    []string
+
+	once sync.Once
 
 	logUnsupportedLines bool
 }
@@ -109,210 +108,6 @@ type LogSource interface {
 	// Read returns the next log line. Returns `io.EOF` at the end of
 	// the log.
 	Read(context.Context) (string, error)
-}
-
-// CollectShowqFromReader parses the output of Postfix's 'showq' command
-// and turns it into metrics.
-//
-// The output format of this command depends on the version of Postfix
-// used. Postfix 2.x uses a textual format, identical to the output of
-// the 'mailq' command. Postfix 3.x uses a binary format, where entries
-// are terminated using null bytes. Auto-detect the format by scanning
-// for null bytes in the first 128 bytes of output.
-func CollectShowqFromReader(file io.Reader, ch chan<- prometheus.Metric) error {
-	reader := bufio.NewReader(file)
-	buf, err := reader.Peek(128)
-	if err != nil && err != io.EOF {
-		log.Printf("Could not read postfix output, %v", err)
-	}
-	if bytes.IndexByte(buf, 0) >= 0 {
-		return CollectBinaryShowqFromReader(reader, ch)
-	}
-	return CollectTextualShowqFromReader(reader, ch)
-}
-
-// CollectTextualShowqFromReader parses Postfix's textual showq output.
-func CollectTextualShowqFromReader(file io.Reader, ch chan<- prometheus.Metric) error {
-
-	// Histograms tracking the messages by size and age.
-	sizeHistogram := prometheus.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Namespace: "postfix",
-			Name:      "showq_message_size_bytes",
-			Help:      "Size of messages in Postfix's message queue, in bytes",
-			Buckets:   []float64{1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9},
-		},
-		[]string{"queue"})
-	ageHistogram := prometheus.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Namespace: "postfix",
-			Name:      "showq_message_age_seconds",
-			Help:      "Age of messages in Postfix's message queue, in seconds",
-			Buckets:   []float64{1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8},
-		},
-		[]string{"queue"})
-
-	err := CollectTextualShowqFromScanner(sizeHistogram, ageHistogram, file)
-
-	sizeHistogram.Collect(ch)
-	ageHistogram.Collect(ch)
-	return err
-}
-
-func CollectTextualShowqFromScanner(sizeHistogram prometheus.ObserverVec, ageHistogram prometheus.ObserverVec, file io.Reader) error {
-	scanner := bufio.NewScanner(file)
-	scanner.Split(bufio.ScanLines)
-	// Initialize all queue buckets to zero.
-	for _, q := range []string{"active", "hold", "other"} {
-		sizeHistogram.WithLabelValues(q)
-		ageHistogram.WithLabelValues(q)
-	}
-
-	location, err := time.LoadLocation("Local")
-	if err != nil {
-		log.Println(err)
-	}
-
-	// Regular expression for matching postqueue's output. Example:
-	// "A07A81514      5156 Tue Feb 14 13:13:54  MAILER-DAEMON"
-	messageLine := regexp.MustCompile(`^[0-9A-F]+([\*!]?) +(\d+) (\w{3} \w{3} +\d+ +\d+:\d{2}:\d{2}) +`)
-
-	for scanner.Scan() {
-		text := scanner.Text()
-		matches := messageLine.FindStringSubmatch(text)
-		if matches == nil {
-			continue
-		}
-		queueMatch := matches[1]
-		sizeMatch := matches[2]
-		dateMatch := matches[3]
-
-		// Derive the name of the message queue.
-		queue := "other"
-		if queueMatch == "*" {
-			queue = "active"
-		} else if queueMatch == "!" {
-			queue = "hold"
-		}
-
-		// Parse the message size.
-		size, err := strconv.ParseFloat(sizeMatch, 64)
-		if err != nil {
-			return err
-		}
-
-		// Parse the message date. Unfortunately, the
-		// output contains no year number. Assume it
-		// applies to the last year for which the
-		// message date doesn't exceed time.Now().
-		date, err := time.ParseInLocation("Mon Jan 2 15:04:05", dateMatch, location)
-		if err != nil {
-			return err
-		}
-		now := time.Now()
-		date = date.AddDate(now.Year(), 0, 0)
-		if date.After(now) {
-			date = date.AddDate(-1, 0, 0)
-		}
-
-		sizeHistogram.WithLabelValues(queue).Observe(size)
-		ageHistogram.WithLabelValues(queue).Observe(now.Sub(date).Seconds())
-	}
-	return scanner.Err()
-}
-
-// ScanNullTerminatedEntries is a splitting function for bufio.Scanner
-// to split entries by null bytes.
-func ScanNullTerminatedEntries(data []byte, atEOF bool) (advance int, token []byte, err error) {
-	if i := bytes.IndexByte(data, 0); i >= 0 {
-		// Valid record found.
-		return i + 1, data[0:i], nil
-	} else if atEOF && len(data) != 0 {
-		// Data at the end of the file without a null terminator.
-		return 0, nil, errors.New("Expected null byte terminator")
-	} else {
-		// Request more data.
-		return 0, nil, nil
-	}
-}
-
-// CollectBinaryShowqFromReader parses Postfix's binary showq format.
-func CollectBinaryShowqFromReader(file io.Reader, ch chan<- prometheus.Metric) error {
-	scanner := bufio.NewScanner(file)
-	scanner.Split(ScanNullTerminatedEntries)
-
-	// Histograms tracking the messages by size and age.
-	sizeHistogram := prometheus.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Namespace: "postfix",
-			Name:      "showq_message_size_bytes",
-			Help:      "Size of messages in Postfix's message queue, in bytes",
-			Buckets:   []float64{1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9},
-		},
-		[]string{"queue"})
-	ageHistogram := prometheus.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Namespace: "postfix",
-			Name:      "showq_message_age_seconds",
-			Help:      "Age of messages in Postfix's message queue, in seconds",
-			Buckets:   []float64{1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8},
-		},
-		[]string{"queue"})
-
-	// Initialize all queue buckets to zero.
-	for _, q := range []string{"active", "deferred", "hold", "incoming", "maildrop"} {
-		sizeHistogram.WithLabelValues(q)
-		ageHistogram.WithLabelValues(q)
-	}
-
-	now := float64(time.Now().UnixNano()) / 1e9
-	queue := "unknown"
-	for scanner.Scan() {
-		// Parse a key/value entry.
-		key := scanner.Text()
-		if len(key) == 0 {
-			// Empty key means a record separator.
-			queue = "unknown"
-			continue
-		}
-		if !scanner.Scan() {
-			return fmt.Errorf("key %q does not have a value", key)
-		}
-		value := scanner.Text()
-
-		if key == "queue_name" {
-			// The name of the message queue.
-			queue = value
-		} else if key == "size" {
-			// Message size in bytes.
-			size, err := strconv.ParseFloat(value, 64)
-			if err != nil {
-				return err
-			}
-			sizeHistogram.WithLabelValues(queue).Observe(size)
-		} else if key == "time" {
-			// Message time as a UNIX timestamp.
-			utime, err := strconv.ParseFloat(value, 64)
-			if err != nil {
-				return err
-			}
-			ageHistogram.WithLabelValues(queue).Observe(now - utime)
-		}
-	}
-
-	sizeHistogram.Collect(ch)
-	ageHistogram.Collect(ch)
-	return scanner.Err()
-}
-
-// CollectShowqFromSocket collects Postfix queue statistics from a socket.
-func CollectShowqFromSocket(path string, ch chan<- prometheus.Metric) error {
-	fd, err := net.Dial("unix", path)
-	if err != nil {
-		return err
-	}
-	defer fd.Close()
-	return CollectShowqFromReader(fd, ch)
 }
 
 // Patterns for parsing log messages.
@@ -335,6 +130,156 @@ var (
 	bounceNonDeliveryLine               = regexp.MustCompile(`: sender non-delivery notification: `)
 )
 
+func (e *PostfixExporter) collectFromPostfixLogLine(line, subprocess, level, remainder string) {
+	switch {
+	case slices.Contains(e.cleanupLabels, subprocess):
+		e.collectCleanupLog(line, remainder, level)
+	case slices.Contains(e.lmtpLabels, subprocess):
+		e.collectLMTPLog(line, remainder, level)
+	case slices.Contains(e.pipeLabels, subprocess):
+		e.collectPipeLog(line, remainder, level)
+	case slices.Contains(e.qmgrLabels, subprocess):
+		e.collectQmgrLog(line, remainder, level)
+	case slices.Contains(e.smtpLabels, subprocess):
+		e.collectSMTPLog(line, remainder, level)
+	case slices.Contains(e.smtpdLabels, subprocess):
+		e.collectSMTPdLog(line, remainder, level)
+	case slices.Contains(e.bounceLabels, subprocess):
+		e.collectBounceLog(line, remainder, level)
+	case slices.Contains(e.virtualLabels, subprocess):
+		e.collectVirtualLog(line, remainder, level)
+	default:
+		e.addToUnsupportedLine(line, subprocess, level)
+	}
+}
+
+func (e *PostfixExporter) collectCleanupLog(line, remainder, level string) {
+	switch {
+	case strings.Contains(remainder, ": message-id=<"):
+		e.cleanupProcesses.Inc()
+	case strings.Contains(remainder, ": reject: "):
+		e.cleanupRejects.Inc()
+	default:
+		e.addToUnsupportedLine(line, "cleanup", level)
+	}
+}
+
+func (e *PostfixExporter) collectLMTPLog(line, remainder, level string) {
+	lmtpMatches := lmtpPipeSMTPLine.FindStringSubmatch(remainder)
+	if lmtpMatches == nil {
+		e.addToUnsupportedLine(line, "lmtp", level)
+		return
+	}
+	addToHistogramVec(e.lmtpDelays, lmtpMatches[2], "LMTP pdelay", "before_queue_manager")
+	addToHistogramVec(e.lmtpDelays, lmtpMatches[3], "LMTP adelay", "queue_manager")
+	addToHistogramVec(e.lmtpDelays, lmtpMatches[4], "LMTP sdelay", "connection_setup")
+	addToHistogramVec(e.lmtpDelays, lmtpMatches[5], "LMTP xdelay", "transmission")
+}
+
+func (e *PostfixExporter) collectPipeLog(line, remainder, level string) {
+	pipeMatches := lmtpPipeSMTPLine.FindStringSubmatch(remainder)
+	if pipeMatches == nil {
+		e.addToUnsupportedLine(line, "pipe", level)
+		return
+	}
+	addToHistogramVec(e.pipeDelays, pipeMatches[2], "PIPE pdelay", pipeMatches[1], "before_queue_manager")
+	addToHistogramVec(e.pipeDelays, pipeMatches[3], "PIPE adelay", pipeMatches[1], "queue_manager")
+	addToHistogramVec(e.pipeDelays, pipeMatches[4], "PIPE sdelay", pipeMatches[1], "connection_setup")
+	addToHistogramVec(e.pipeDelays, pipeMatches[5], "PIPE xdelay", pipeMatches[1], "transmission")
+}
+
+func (e *PostfixExporter) collectQmgrLog(line, remainder, level string) {
+	qmgrInsertMatches := qmgrInsertLine.FindStringSubmatch(remainder)
+	switch {
+	case qmgrInsertMatches != nil:
+		addToHistogram(e.qmgrInsertsSize, qmgrInsertMatches[1], "QMGR size")
+		addToHistogram(e.qmgrInsertsNrcpt, qmgrInsertMatches[2], "QMGR nrcpt")
+	case strings.HasSuffix(remainder, ": removed"):
+		e.qmgrRemoves.Inc()
+	case qmgrExpiredLine.MatchString(remainder):
+		e.qmgrExpires.Inc()
+	default:
+		e.addToUnsupportedLine(line, "qmgr", level)
+	}
+}
+
+func (e *PostfixExporter) collectSMTPLog(line, remainder, level string) {
+	if smtpMatches := lmtpPipeSMTPLine.FindStringSubmatch(remainder); smtpMatches != nil {
+		addToHistogramVec(e.smtpDelays, smtpMatches[2], "before_queue_manager", "")
+		addToHistogramVec(e.smtpDelays, smtpMatches[3], "queue_manager", "")
+		addToHistogramVec(e.smtpDelays, smtpMatches[4], "connection_setup", "")
+		addToHistogramVec(e.smtpDelays, smtpMatches[5], "transmission", "")
+		e.collectSMTPStatusLog(remainder)
+	} else if smtpTLSMatches := smtpTLSLine.FindStringSubmatch(remainder); smtpTLSMatches != nil {
+		e.smtpTLSConnects.WithLabelValues(smtpTLSMatches[1:]...).Inc()
+	} else if connectionTimedOutMatches := smtpConnectionTimedOut.FindStringSubmatch(remainder); connectionTimedOutMatches != nil {
+		e.smtpConnectionTimedOut.Inc()
+	} else {
+		e.addToUnsupportedLine(line, "smtp", level)
+	}
+}
+
+func (e *PostfixExporter) collectSMTPStatusLog(remainder string) {
+	smtpStatusMatches := smtpStatusLine.FindStringSubmatch(remainder)
+	if smtpStatusMatches == nil {
+		return
+	}
+	e.smtpProcesses.WithLabelValues(smtpStatusMatches[1]).Inc()
+	dsnMatches := smtpDSNLine.FindStringSubmatch(remainder)
+	switch smtpStatusMatches[1] {
+	case "deferred":
+		e.smtpStatusDeferred.Inc()
+		if dsnMatches != nil {
+			e.smtpDeferredDSN.WithLabelValues(dsnMatches[1]).Inc()
+		}
+	case "bounced":
+		if dsnMatches != nil {
+			e.smtpBouncedDSN.WithLabelValues(dsnMatches[1]).Inc()
+		}
+	}
+}
+
+func (e *PostfixExporter) collectSMTPdLog(line, remainder, level string) {
+	if strings.HasPrefix(remainder, "connect from ") {
+		e.smtpdConnects.Inc()
+	} else if strings.HasPrefix(remainder, "disconnect from ") {
+		e.smtpdDisconnects.Inc()
+	} else if smtpdFCrDNSErrorsLine.MatchString(remainder) {
+		e.smtpdFCrDNSErrors.Inc()
+	} else if smtpdLostConnectionMatches := smtpdLostConnectionLine.FindStringSubmatch(remainder); smtpdLostConnectionMatches != nil {
+		e.smtpdLostConnections.WithLabelValues(smtpdLostConnectionMatches[1]).Inc()
+	} else if smtpdProcessesSASLMatches := smtpdProcessesSASLLine.FindStringSubmatch(remainder); smtpdProcessesSASLMatches != nil {
+		e.smtpdProcesses.WithLabelValues(strings.ReplaceAll(smtpdProcessesSASLMatches[1], ",", "")).Inc()
+	} else if strings.Contains(remainder, ": client=") {
+		e.smtpdProcesses.WithLabelValues("NONE").Inc()
+	} else if smtpdRejectsMatches := smtpdRejectsLine.FindStringSubmatch(remainder); smtpdRejectsMatches != nil {
+		e.smtpdRejects.WithLabelValues(smtpdRejectsMatches[1]).Inc()
+	} else if smtpdSASLAuthenticationFailuresLine.MatchString(remainder) {
+		e.smtpdSASLAuthenticationFailures.Inc()
+	} else if smtpdTLSMatches := smtpdTLSLine.FindStringSubmatch(remainder); smtpdTLSMatches != nil {
+		e.smtpdTLSConnects.WithLabelValues(smtpdTLSMatches[1:]...).Inc()
+	} else {
+		e.addToUnsupportedLine(line, "smtpd", level)
+	}
+}
+
+func (e *PostfixExporter) collectBounceLog(line, remainder, level string) {
+	bounceMatches := bounceNonDeliveryLine.FindStringSubmatch(remainder)
+	if bounceMatches == nil {
+		e.addToUnsupportedLine(line, "postfix", level)
+		return
+	}
+	e.bounceNonDelivery.Inc()
+}
+
+func (e *PostfixExporter) collectVirtualLog(line, remainder, level string) {
+	if strings.HasSuffix(remainder, ", status=sent (delivered to maildir)") {
+		e.virtualDelivered.Inc()
+	} else {
+		e.addToUnsupportedLine(line, "postfix", level)
+	}
+}
+
 // CollectFromLogline collects metrict from a Postfix log line.
 func (e *PostfixExporter) CollectFromLogLine(line string) {
 	// Strip off timestamp, hostname, etc.
@@ -350,110 +295,8 @@ func (e *PostfixExporter) CollectFromLogLine(line string) {
 	remainder := logMatches[4]
 	switch process {
 	case "postfix":
-		// Group patterns to check by Postfix service.
 		subprocess := logMatches[3]
-		switch {
-		case slices.Contains(e.cleanupLabels, subprocess):
-			if strings.Contains(remainder, ": message-id=<") {
-				e.cleanupProcesses.Inc()
-			} else if strings.Contains(remainder, ": reject: ") {
-				e.cleanupRejects.Inc()
-			} else {
-				e.addToUnsupportedLine(line, "cleanup", level)
-			}
-		case slices.Contains(e.lmtpLabels, subprocess):
-			if lmtpMatches := lmtpPipeSMTPLine.FindStringSubmatch(remainder); lmtpMatches != nil {
-				addToHistogramVec(e.lmtpDelays, lmtpMatches[2], "LMTP pdelay", "before_queue_manager")
-				addToHistogramVec(e.lmtpDelays, lmtpMatches[3], "LMTP adelay", "queue_manager")
-				addToHistogramVec(e.lmtpDelays, lmtpMatches[4], "LMTP sdelay", "connection_setup")
-				addToHistogramVec(e.lmtpDelays, lmtpMatches[5], "LMTP xdelay", "transmission")
-			} else {
-				e.addToUnsupportedLine(line, "lmtp", level)
-			}
-		case slices.Contains(e.pipeLabels, subprocess):
-			if pipeMatches := lmtpPipeSMTPLine.FindStringSubmatch(remainder); pipeMatches != nil {
-				addToHistogramVec(e.pipeDelays, pipeMatches[2], "PIPE pdelay", pipeMatches[1], "before_queue_manager")
-				addToHistogramVec(e.pipeDelays, pipeMatches[3], "PIPE adelay", pipeMatches[1], "queue_manager")
-				addToHistogramVec(e.pipeDelays, pipeMatches[4], "PIPE sdelay", pipeMatches[1], "connection_setup")
-				addToHistogramVec(e.pipeDelays, pipeMatches[5], "PIPE xdelay", pipeMatches[1], "transmission")
-			} else {
-				e.addToUnsupportedLine(line, "pipe", level)
-			}
-		case slices.Contains(e.qmgrLabels, subprocess):
-			if qmgrInsertMatches := qmgrInsertLine.FindStringSubmatch(remainder); qmgrInsertMatches != nil {
-				addToHistogram(e.qmgrInsertsSize, qmgrInsertMatches[1], "QMGR size")
-				addToHistogram(e.qmgrInsertsNrcpt, qmgrInsertMatches[2], "QMGR nrcpt")
-			} else if strings.HasSuffix(remainder, ": removed") {
-				e.qmgrRemoves.Inc()
-			} else if qmgrExpired := qmgrExpiredLine.FindStringSubmatch(remainder); qmgrExpired != nil {
-				e.qmgrExpires.Inc()
-			} else {
-				e.addToUnsupportedLine(line, "qmgr", level)
-			}
-		case slices.Contains(e.smtpLabels, subprocess):
-			if smtpMatches := lmtpPipeSMTPLine.FindStringSubmatch(remainder); smtpMatches != nil {
-				addToHistogramVec(e.smtpDelays, smtpMatches[2], "before_queue_manager", "")
-				addToHistogramVec(e.smtpDelays, smtpMatches[3], "queue_manager", "")
-				addToHistogramVec(e.smtpDelays, smtpMatches[4], "connection_setup", "")
-				addToHistogramVec(e.smtpDelays, smtpMatches[5], "transmission", "")
-				if smtpStatusMatches := smtpStatusLine.FindStringSubmatch(remainder); smtpStatusMatches != nil {
-					e.smtpProcesses.WithLabelValues(smtpStatusMatches[1]).Inc()
-					dsnMatches := smtpDSNLine.FindStringSubmatch(remainder)
-					if smtpStatusMatches[1] == "deferred" {
-						e.smtpStatusDeferred.Inc()
-						if dsnMatches != nil {
-							e.smtpDeferredDSN.WithLabelValues(dsnMatches[1]).Inc()
-						}
-					} else if smtpStatusMatches[1] == "bounced" {
-						if dsnMatches != nil {
-							e.smtpBouncedDSN.WithLabelValues(dsnMatches[1]).Inc()
-						}
-					}
-				}
-			} else if smtpTLSMatches := smtpTLSLine.FindStringSubmatch(remainder); smtpTLSMatches != nil {
-				e.smtpTLSConnects.WithLabelValues(smtpTLSMatches[1:]...).Inc()
-			} else if smtpMatches := smtpConnectionTimedOut.FindStringSubmatch(remainder); smtpMatches != nil {
-				e.smtpConnectionTimedOut.Inc()
-			} else {
-				e.addToUnsupportedLine(line, "smtp", level)
-			}
-		case slices.Contains(e.smtpdLabels, subprocess):
-			if strings.HasPrefix(remainder, "connect from ") {
-				e.smtpdConnects.Inc()
-			} else if strings.HasPrefix(remainder, "disconnect from ") {
-				e.smtpdDisconnects.Inc()
-			} else if smtpdFCrDNSErrorsLine.MatchString(remainder) {
-				e.smtpdFCrDNSErrors.Inc()
-			} else if smtpdLostConnectionMatches := smtpdLostConnectionLine.FindStringSubmatch(remainder); smtpdLostConnectionMatches != nil {
-				e.smtpdLostConnections.WithLabelValues(smtpdLostConnectionMatches[1]).Inc()
-			} else if smtpdProcessesSASLMatches := smtpdProcessesSASLLine.FindStringSubmatch(remainder); smtpdProcessesSASLMatches != nil {
-				e.smtpdProcesses.WithLabelValues(strings.ReplaceAll(smtpdProcessesSASLMatches[1], ",", "")).Inc()
-			} else if strings.Contains(remainder, ": client=") {
-				e.smtpdProcesses.WithLabelValues("NONE").Inc()
-			} else if smtpdRejectsMatches := smtpdRejectsLine.FindStringSubmatch(remainder); smtpdRejectsMatches != nil {
-				e.smtpdRejects.WithLabelValues(smtpdRejectsMatches[1]).Inc()
-			} else if smtpdSASLAuthenticationFailuresLine.MatchString(remainder) {
-				e.smtpdSASLAuthenticationFailures.Inc()
-			} else if smtpdTLSMatches := smtpdTLSLine.FindStringSubmatch(remainder); smtpdTLSMatches != nil {
-				e.smtpdTLSConnects.WithLabelValues(smtpdTLSMatches[1:]...).Inc()
-			} else {
-				e.addToUnsupportedLine(line, "smtpd", level)
-			}
-		case slices.Contains(e.bounceLabels, subprocess):
-			if bounceMatches := bounceNonDeliveryLine.FindStringSubmatch(remainder); bounceMatches != nil {
-				e.bounceNonDelivery.Inc()
-			} else {
-				e.addToUnsupportedLine(line, process, level)
-			}
-		case slices.Contains(e.virtualLabels, subprocess):
-			if strings.HasSuffix(remainder, ", status=sent (delivered to maildir)") {
-				e.virtualDelivered.Inc()
-			} else {
-				e.addToUnsupportedLine(line, process, level)
-			}
-		default:
-			e.addToUnsupportedLine(line, subprocess, level)
-		}
+		e.collectFromPostfixLogLine(line, subprocess, level, remainder)
 	case "opendkim":
 		if opendkimMatches := opendkimSignatureAdded.FindStringSubmatch(remainder); opendkimMatches != nil {
 			e.opendkimSignatureAdded.WithLabelValues(opendkimMatches[1], opendkimMatches[2]).Inc()
@@ -555,9 +398,192 @@ func WithVirtualLabels(labels []string) ServiceLabel {
 	}
 }
 
+func (e *PostfixExporter) init() {
+	timeBuckets := []float64{1e-3, 1e-2, 1e-1, 1.0, 10, 1 * 60, 1 * 60 * 60, 24 * 60 * 60, 2 * 24 * 60 * 60}
+
+	e.once.Do(func() {
+		e.cleanupProcesses = prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "postfix",
+			Name:      "cleanup_messages_processed_total",
+			Help:      "Total number of messages processed by cleanup.",
+		})
+		e.cleanupRejects = prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "postfix",
+			Name:      "cleanup_messages_rejected_total",
+			Help:      "Total number of messages rejected by cleanup.",
+		})
+		e.cleanupNotAccepted = prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "postfix",
+			Name:      "cleanup_messages_not_accepted_total",
+			Help:      "Total number of messages not accepted by cleanup.",
+		})
+		e.lmtpDelays = prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: "postfix",
+				Name:      "lmtp_delivery_delay_seconds",
+				Help:      "LMTP message processing time in seconds.",
+				Buckets:   timeBuckets,
+			},
+			[]string{"stage"})
+		e.pipeDelays = prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: "postfix",
+				Name:      "pipe_delivery_delay_seconds",
+				Help:      "Pipe message processing time in seconds.",
+				Buckets:   timeBuckets,
+			},
+			[]string{"relay", "stage"})
+		e.qmgrInsertsNrcpt = prometheus.NewHistogram(prometheus.HistogramOpts{
+			Namespace: "postfix",
+			Name:      "qmgr_messages_inserted_receipients",
+			Help:      "Number of receipients per message inserted into the mail queues.",
+			Buckets:   []float64{1, 2, 4, 8, 16, 32, 64, 128},
+		})
+		e.qmgrInsertsSize = prometheus.NewHistogram(prometheus.HistogramOpts{
+			Namespace: "postfix",
+			Name:      "qmgr_messages_inserted_size_bytes",
+			Help:      "Size of messages inserted into the mail queues in bytes.",
+			Buckets:   []float64{1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9},
+		})
+		e.qmgrRemoves = prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "postfix",
+			Name:      "qmgr_messages_removed_total",
+			Help:      "Total number of messages removed from mail queues.",
+		})
+		e.qmgrExpires = prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "postfix",
+			Name:      "qmgr_messages_expired_total",
+			Help:      "Total number of messages expired from mail queues.",
+		})
+		e.smtpDelays = prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: "postfix",
+				Name:      "smtp_delivery_delay_seconds",
+				Help:      "SMTP message processing time in seconds.",
+				Buckets:   timeBuckets,
+			},
+			[]string{"stage"})
+		e.smtpTLSConnects = prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "postfix",
+				Name:      "smtp_tls_connections_total",
+				Help:      "Total number of outgoing TLS connections.",
+			},
+			[]string{"trust", "protocol", "cipher", "secret_bits", "algorithm_bits"})
+		e.smtpDeferreds = prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "postfix",
+			Name:      "smtp_deferred_messages_total",
+			Help:      "Total number of messages that have been deferred on SMTP.",
+		})
+		e.smtpProcesses = prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "postfix",
+				Name:      "smtp_messages_processed_total",
+				Help:      "Total number of messages that have been processed by the smtp process.",
+			},
+			[]string{"status"})
+		e.smtpDeferredDSN = prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "postfix",
+				Name:      "smtp_deferred_messages_by_dsn_total",
+				Help:      "Total number of messages that have been deferred on SMTP by DSN.",
+			},
+			[]string{"dsn"})
+		e.smtpBouncedDSN = prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "postfix",
+				Name:      "smtp_bounced_messages_by_dsn_total",
+				Help:      "Total number of messages that have been bounced on SMTP by DSN.",
+			},
+			[]string{"dsn"})
+		e.smtpConnectionTimedOut = prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "postfix",
+			Name:      "smtp_connection_timed_out_total",
+			Help:      "Total number of messages that have been deferred on SMTP.",
+		})
+		e.smtpdConnects = prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "postfix",
+			Name:      "smtpd_connects_total",
+			Help:      "Total number of incoming connections.",
+		})
+		e.smtpdDisconnects = prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "postfix",
+			Name:      "smtpd_disconnects_total",
+			Help:      "Total number of incoming disconnections.",
+		})
+		e.smtpdFCrDNSErrors = prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "postfix",
+			Name:      "smtpd_forward_confirmed_reverse_dns_errors_total",
+			Help:      "Total number of connections for which forward-confirmed DNS cannot be resolved.",
+		})
+		e.smtpdLostConnections = prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "postfix",
+				Name:      "smtpd_connections_lost_total",
+				Help:      "Total number of connections lost.",
+			},
+			[]string{"after_stage"})
+		e.smtpdProcesses = prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "postfix",
+				Name:      "smtpd_messages_processed_total",
+				Help:      "Total number of messages processed.",
+			},
+			[]string{"sasl_method"})
+		e.smtpdRejects = prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "postfix",
+				Name:      "smtpd_messages_rejected_total",
+				Help:      "Total number of NOQUEUE rejects.",
+			},
+			[]string{"code"})
+		e.smtpdSASLAuthenticationFailures = prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "postfix",
+			Name:      "smtpd_sasl_authentication_failures_total",
+			Help:      "Total number of SASL authentication failures.",
+		})
+		e.smtpdTLSConnects = prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "postfix",
+				Name:      "smtpd_tls_connections_total",
+				Help:      "Total number of incoming TLS connections.",
+			},
+			[]string{"trust", "protocol", "cipher", "secret_bits", "algorithm_bits"})
+		e.unsupportedLogEntries = prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "postfix",
+				Name:      "unsupported_log_entries_total",
+				Help:      "Log entries that could not be processed.",
+			},
+			[]string{"service", "level"})
+		e.smtpStatusDeferred = prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "postfix",
+			Name:      "smtp_status_deferred",
+			Help:      "Total number of messages deferred.",
+		})
+		e.opendkimSignatureAdded = prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "opendkim",
+				Name:      "signatures_added_total",
+				Help:      "Total number of messages signed.",
+			},
+			[]string{"subject", "domain"},
+		)
+		e.bounceNonDelivery = prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "postfix",
+			Name:      "bounce_non_delivery_notification_total",
+			Help:      "Total number of non delivery notification sent by bounce.",
+		})
+		e.virtualDelivered = prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "postfix",
+			Name:      "virtual_delivered_total",
+			Help:      "Total number of mail delivered to a virtual mailbox.",
+		})
+	})
+}
+
 // NewPostfixExporter creates a new Postfix exporter instance.
 func NewPostfixExporter(showqPath string, logSrc LogSource, logUnsupportedLines bool, serviceLabels ...ServiceLabel) *PostfixExporter {
-	timeBuckets := []float64{1e-3, 1e-2, 1e-1, 1.0, 10, 1 * 60, 1 * 60 * 60, 24 * 60 * 60, 2 * 24 * 60 * 60}
 	postfixExporter := &PostfixExporter{
 		cleanupLabels:       defaultCleanupLabels,
 		lmtpLabels:          defaultLmtpLabels,
@@ -568,191 +594,16 @@ func NewPostfixExporter(showqPath string, logSrc LogSource, logUnsupportedLines 
 		bounceLabels:        defaultBounceLabels,
 		virtualLabels:       defaultVirtualLabels,
 		logUnsupportedLines: logUnsupportedLines,
+		showq:               showq.NewShowq(showqPath),
 		showqPath:           showqPath,
 		logSrc:              logSrc,
-
-		cleanupProcesses: prometheus.NewCounter(prometheus.CounterOpts{
-			Namespace: "postfix",
-			Name:      "cleanup_messages_processed_total",
-			Help:      "Total number of messages processed by cleanup.",
-		}),
-		cleanupRejects: prometheus.NewCounter(prometheus.CounterOpts{
-			Namespace: "postfix",
-			Name:      "cleanup_messages_rejected_total",
-			Help:      "Total number of messages rejected by cleanup.",
-		}),
-		cleanupNotAccepted: prometheus.NewCounter(prometheus.CounterOpts{
-			Namespace: "postfix",
-			Name:      "cleanup_messages_not_accepted_total",
-			Help:      "Total number of messages not accepted by cleanup.",
-		}),
-		lmtpDelays: prometheus.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Namespace: "postfix",
-				Name:      "lmtp_delivery_delay_seconds",
-				Help:      "LMTP message processing time in seconds.",
-				Buckets:   timeBuckets,
-			},
-			[]string{"stage"}),
-		pipeDelays: prometheus.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Namespace: "postfix",
-				Name:      "pipe_delivery_delay_seconds",
-				Help:      "Pipe message processing time in seconds.",
-				Buckets:   timeBuckets,
-			},
-			[]string{"relay", "stage"}),
-		qmgrInsertsNrcpt: prometheus.NewHistogram(prometheus.HistogramOpts{
-			Namespace: "postfix",
-			Name:      "qmgr_messages_inserted_receipients",
-			Help:      "Number of receipients per message inserted into the mail queues.",
-			Buckets:   []float64{1, 2, 4, 8, 16, 32, 64, 128},
-		}),
-		qmgrInsertsSize: prometheus.NewHistogram(prometheus.HistogramOpts{
-			Namespace: "postfix",
-			Name:      "qmgr_messages_inserted_size_bytes",
-			Help:      "Size of messages inserted into the mail queues in bytes.",
-			Buckets:   []float64{1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9},
-		}),
-		qmgrRemoves: prometheus.NewCounter(prometheus.CounterOpts{
-			Namespace: "postfix",
-			Name:      "qmgr_messages_removed_total",
-			Help:      "Total number of messages removed from mail queues.",
-		}),
-		qmgrExpires: prometheus.NewCounter(prometheus.CounterOpts{
-			Namespace: "postfix",
-			Name:      "qmgr_messages_expired_total",
-			Help:      "Total number of messages expired from mail queues.",
-		}),
-		smtpDelays: prometheus.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Namespace: "postfix",
-				Name:      "smtp_delivery_delay_seconds",
-				Help:      "SMTP message processing time in seconds.",
-				Buckets:   timeBuckets,
-			},
-			[]string{"stage"}),
-		smtpTLSConnects: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: "postfix",
-				Name:      "smtp_tls_connections_total",
-				Help:      "Total number of outgoing TLS connections.",
-			},
-			[]string{"trust", "protocol", "cipher", "secret_bits", "algorithm_bits"}),
-		smtpDeferreds: prometheus.NewCounter(prometheus.CounterOpts{
-			Namespace: "postfix",
-			Name:      "smtp_deferred_messages_total",
-			Help:      "Total number of messages that have been deferred on SMTP.",
-		}),
-		smtpProcesses: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: "postfix",
-				Name:      "smtp_messages_processed_total",
-				Help:      "Total number of messages that have been processed by the smtp process.",
-			},
-			[]string{"status"}),
-		smtpDeferredDSN: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: "postfix",
-				Name:      "smtp_deferred_messages_by_dsn_total",
-				Help:      "Total number of messages that have been deferred on SMTP by DSN.",
-			},
-			[]string{"dsn"}),
-		smtpBouncedDSN: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: "postfix",
-				Name:      "smtp_bounced_messages_by_dsn_total",
-				Help:      "Total number of messages that have been bounced on SMTP by DSN.",
-			},
-			[]string{"dsn"}),
-		smtpConnectionTimedOut: prometheus.NewCounter(prometheus.CounterOpts{
-			Namespace: "postfix",
-			Name:      "smtp_connection_timed_out_total",
-			Help:      "Total number of messages that have been deferred on SMTP.",
-		}),
-		smtpdConnects: prometheus.NewCounter(prometheus.CounterOpts{
-			Namespace: "postfix",
-			Name:      "smtpd_connects_total",
-			Help:      "Total number of incoming connections.",
-		}),
-		smtpdDisconnects: prometheus.NewCounter(prometheus.CounterOpts{
-			Namespace: "postfix",
-			Name:      "smtpd_disconnects_total",
-			Help:      "Total number of incoming disconnections.",
-		}),
-		smtpdFCrDNSErrors: prometheus.NewCounter(prometheus.CounterOpts{
-			Namespace: "postfix",
-			Name:      "smtpd_forward_confirmed_reverse_dns_errors_total",
-			Help:      "Total number of connections for which forward-confirmed DNS cannot be resolved.",
-		}),
-		smtpdLostConnections: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: "postfix",
-				Name:      "smtpd_connections_lost_total",
-				Help:      "Total number of connections lost.",
-			},
-			[]string{"after_stage"}),
-		smtpdProcesses: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: "postfix",
-				Name:      "smtpd_messages_processed_total",
-				Help:      "Total number of messages processed.",
-			},
-			[]string{"sasl_method"}),
-		smtpdRejects: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: "postfix",
-				Name:      "smtpd_messages_rejected_total",
-				Help:      "Total number of NOQUEUE rejects.",
-			},
-			[]string{"code"}),
-		smtpdSASLAuthenticationFailures: prometheus.NewCounter(prometheus.CounterOpts{
-			Namespace: "postfix",
-			Name:      "smtpd_sasl_authentication_failures_total",
-			Help:      "Total number of SASL authentication failures.",
-		}),
-		smtpdTLSConnects: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: "postfix",
-				Name:      "smtpd_tls_connections_total",
-				Help:      "Total number of incoming TLS connections.",
-			},
-			[]string{"trust", "protocol", "cipher", "secret_bits", "algorithm_bits"}),
-		unsupportedLogEntries: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: "postfix",
-				Name:      "unsupported_log_entries_total",
-				Help:      "Log entries that could not be processed.",
-			},
-			[]string{"service", "level"}),
-		smtpStatusDeferred: prometheus.NewCounter(prometheus.CounterOpts{
-			Namespace: "postfix",
-			Name:      "smtp_status_deferred",
-			Help:      "Total number of messages deferred.",
-		}),
-		opendkimSignatureAdded: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: "opendkim",
-				Name:      "signatures_added_total",
-				Help:      "Total number of messages signed.",
-			},
-			[]string{"subject", "domain"},
-		),
-		bounceNonDelivery: prometheus.NewCounter(prometheus.CounterOpts{
-			Namespace: "postfix",
-			Name:      "bounce_non_delivery_notification_total",
-			Help:      "Total number of non delivery notification sent by bounce.",
-		}),
-		virtualDelivered: prometheus.NewCounter(prometheus.CounterOpts{
-			Namespace: "postfix",
-			Name:      "virtual_delivered_total",
-			Help:      "Total number of mail delivered to a virtual mailbox.",
-		}),
 	}
 
 	for _, serviceLabel := range serviceLabels {
 		serviceLabel(postfixExporter)
 	}
+
+	postfixExporter.init()
 
 	return postfixExporter
 }
@@ -826,7 +677,7 @@ func (e *PostfixExporter) StartMetricCollection(ctx context.Context) {
 
 // Collect metrics from Postfix's showq socket and its log file.
 func (e *PostfixExporter) Collect(ch chan<- prometheus.Metric) {
-	err := CollectShowqFromSocket(e.showqPath, ch)
+	err := e.showq.Collect(ch)
 	if err == nil {
 		ch <- prometheus.MustNewConstMetric(
 			postfixUpDesc,

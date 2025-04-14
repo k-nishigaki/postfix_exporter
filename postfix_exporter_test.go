@@ -17,58 +17,50 @@ func stringPtr(s string) *string {
 	return &s
 }
 
+type args struct {
+	line                   []string
+	unsupportedLogEntries  []testCounterMetric
+	removedCount           int
+	expiredCount           int
+	saslFailedCount        int
+	outgoingTLS            int
+	smtpdMessagesProcessed int
+	smtpMessagesProcessed  int
+	smtpDeferred           int
+	smtpBounced            int
+	bounceNonDelivery      int
+	virtualDelivered       int
+}
+
+type testCase struct {
+	serviceLabels []ServiceLabel
+	name          string
+	args          args
+}
+
+func testPostfixExporter_CollectFromLogline(t *testing.T, tt testCase) {
+	t.Helper()
+	e := NewPostfixExporter("", nil, true, tt.serviceLabels...)
+
+	for _, line := range tt.args.line {
+		e.CollectFromLogLine(line)
+	}
+	assertCounterEquals(t, e.qmgrRemoves, tt.args.removedCount, "Wrong number of lines counted")
+	assertCounterEquals(t, e.qmgrExpires, tt.args.expiredCount, "Wrong number of qmgr expired lines counted")
+	assertCounterEquals(t, e.smtpdSASLAuthenticationFailures, tt.args.saslFailedCount, "Wrong number of Sasl counter counted")
+	assertCounterEquals(t, e.smtpTLSConnects, tt.args.outgoingTLS, "Wrong number of TLS connections counted")
+	assertCounterEquals(t, e.smtpdProcesses, tt.args.smtpdMessagesProcessed, "Wrong number of smtpd messages processed")
+	assertCounterEquals(t, e.smtpProcesses, tt.args.smtpMessagesProcessed, "Wrong number of smtp messages processed")
+	assertCounterEquals(t, e.smtpDeferredDSN, tt.args.smtpDeferred, "Wrong number of smtp deferred")
+	assertCounterEquals(t, e.smtpBouncedDSN, tt.args.smtpBounced, "Wrong number of smtp bounced")
+	assertCounterEquals(t, e.bounceNonDelivery, tt.args.bounceNonDelivery, "Wrong number of non delivery notifications")
+	assertCounterEquals(t, e.virtualDelivered, tt.args.virtualDelivered, "Wrong number of delivered mails")
+	assertCounterVecMetricsEquals(t, e.unsupportedLogEntries, tt.args.unsupportedLogEntries, "Wrong number of unsupportedLogEntries")
+}
+
 func TestPostfixExporter_CollectFromLogline(t *testing.T) {
-	type fields struct {
-		smtpStatusDeferred              prometheus.Counter
-		smtpdDisconnects                prometheus.Counter
-		cleanupProcesses                prometheus.Counter
-		cleanupRejects                  prometheus.Counter
-		cleanupNotAccepted              prometheus.Counter
-		virtualDelivered                prometheus.Counter
-		bounceNonDelivery               prometheus.Counter
-		qmgrInsertsNrcpt                prometheus.Histogram
-		qmgrInsertsSize                 prometheus.Histogram
-		qmgrRemoves                     prometheus.Counter
-		qmgrExpires                     prometheus.Counter
-		smtpdSASLAuthenticationFailures prometheus.Counter
-		smtpdFCrDNSErrors               prometheus.Counter
-		smtpDeferreds                   prometheus.Counter
-		logSrc                          LogSource
-		smtpdConnects                   prometheus.Counter
-		lmtpDelays                      *prometheus.HistogramVec
-		smtpBouncedDSN                  *prometheus.CounterVec
-		smtpDeferredDSN                 *prometheus.CounterVec
-		smtpProcesses                   *prometheus.CounterVec
-		smtpTLSConnects                 *prometheus.CounterVec
-		smtpdRejects                    *prometheus.CounterVec
-		smtpdLostConnections            *prometheus.CounterVec
-		smtpDelays                      *prometheus.HistogramVec
-		smtpdTLSConnects                *prometheus.CounterVec
-		pipeDelays                      *prometheus.HistogramVec
-		smtpdProcesses                  *prometheus.CounterVec
-		unsupportedLogEntries           *prometheus.CounterVec
-		showqPath                       string
-	}
-	type args struct {
-		line                   []string
-		unsupportedLogEntries  []testCounterMetric
-		removedCount           int
-		expiredCount           int
-		saslFailedCount        int
-		outgoingTLS            int
-		smtpdMessagesProcessed int
-		smtpMessagesProcessed  int
-		smtpDeferred           int
-		smtpBounced            int
-		bounceNonDelivery      int
-		virtualDelivered       int
-	}
-	tests := []struct {
-		serviceLabels []ServiceLabel
-		name          string
-		fields        fields
-		args          args
-	}{
+	t.Parallel()
+	tests := []testCase{
 		{
 			name: "Single line",
 			args: args{
@@ -77,10 +69,6 @@ func TestPostfixExporter_CollectFromLogline(t *testing.T) {
 				},
 				removedCount:    1,
 				saslFailedCount: 0,
-			},
-			fields: fields{
-				qmgrRemoves:           prometheus.NewCounter(prometheus.CounterOpts{}),
-				unsupportedLogEntries: prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"service", "level"}),
 			},
 		},
 		{
@@ -122,10 +110,6 @@ func TestPostfixExporter_CollectFromLogline(t *testing.T) {
 				removedCount:    31,
 				saslFailedCount: 0,
 			},
-			fields: fields{
-				qmgrRemoves:           prometheus.NewCounter(prometheus.CounterOpts{}),
-				unsupportedLogEntries: prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"service", "level"}),
-			},
 		},
 		{
 			name: "qmgr expired",
@@ -135,9 +119,6 @@ func TestPostfixExporter_CollectFromLogline(t *testing.T) {
 					"Apr 10 14:50:16 mail postfix/qmgr[3663]: BACE842E73: from=<noreply@domain.com>, status=force-expired, returned to sender",
 				},
 				expiredCount: 2,
-			},
-			fields: fields{
-				qmgrExpires: prometheus.NewCounter(prometheus.CounterOpts{}),
 			},
 		},
 		{
@@ -150,11 +131,6 @@ func TestPostfixExporter_CollectFromLogline(t *testing.T) {
 				},
 				saslFailedCount: 1,
 				removedCount:    0,
-			},
-			fields: fields{
-				smtpdSASLAuthenticationFailures: prometheus.NewCounter(prometheus.CounterOpts{}),
-				unsupportedLogEntries:           prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"service", "level"}),
-				smtpProcesses:                   prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"status"}),
 			},
 		},
 		{
@@ -169,10 +145,6 @@ func TestPostfixExporter_CollectFromLogline(t *testing.T) {
 				outgoingTLS:            0,
 				smtpdMessagesProcessed: 2,
 			},
-			fields: fields{
-				unsupportedLogEntries: prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"service", "level"}),
-				smtpdProcesses:        prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"sasl_method"}),
-			},
 		},
 		{
 			name: "Issue #35",
@@ -186,11 +158,6 @@ func TestPostfixExporter_CollectFromLogline(t *testing.T) {
 				outgoingTLS:            2,
 				smtpdMessagesProcessed: 0,
 			},
-			fields: fields{
-				unsupportedLogEntries: prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"service", "level"}),
-				smtpTLSConnects:       prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"Verified", "TLSv1.2", "ECDHE-RSA-AES256-GCM-SHA384", "256", "256"}),
-				smtpProcesses:         prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"status"}),
-			},
 		},
 		{
 			name: "Testing delays",
@@ -203,10 +170,6 @@ func TestPostfixExporter_CollectFromLogline(t *testing.T) {
 				outgoingTLS:            0,
 				smtpdMessagesProcessed: 0,
 				smtpMessagesProcessed:  1,
-			},
-			fields: fields{
-				smtpDelays:    prometheus.NewHistogramVec(prometheus.HistogramOpts{}, []string{"stage"}),
-				smtpProcesses: prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"status"}),
 			},
 		},
 		{
@@ -223,15 +186,6 @@ func TestPostfixExporter_CollectFromLogline(t *testing.T) {
 				smtpBounced:           1,
 				bounceNonDelivery:     1,
 			},
-			fields: fields{
-				unsupportedLogEntries: prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"service", "level"}),
-				smtpDelays:            prometheus.NewHistogramVec(prometheus.HistogramOpts{}, []string{"stage"}),
-				smtpStatusDeferred:    prometheus.NewCounter(prometheus.CounterOpts{}),
-				smtpProcesses:         prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"status"}),
-				smtpDeferredDSN:       prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"dsn"}),
-				smtpBouncedDSN:        prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"dsn"}),
-				bounceNonDelivery:     prometheus.NewCounter(prometheus.CounterOpts{}),
-			},
 		},
 		{
 			name: "Testing virtual delivered",
@@ -240,9 +194,6 @@ func TestPostfixExporter_CollectFromLogline(t *testing.T) {
 					"Apr  7 15:35:20 123-mail postfix/virtual[20235]: 199041033BE: to=<me@domain.fr>, relay=virtual, delay=0.08, delays=0.08/0/0/0, dsn=2.0.0, status=sent (delivered to maildir)",
 				},
 				virtualDelivered: 1,
-			},
-			fields: fields{
-				virtualDelivered: prometheus.NewCounter(prometheus.CounterOpts{}),
 			},
 		},
 		{
@@ -296,9 +247,6 @@ func TestPostfixExporter_CollectFromLogline(t *testing.T) {
 					},
 				},
 			},
-			fields: fields{
-				unsupportedLogEntries: prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"service", "level"}),
-			},
 		},
 		{
 			name: "User-defined service labels",
@@ -324,130 +272,72 @@ func TestPostfixExporter_CollectFromLogline(t *testing.T) {
 					},
 				},
 			},
-			fields: fields{
-				smtpProcesses:         prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"status"}),
-				smtpDelays:            prometheus.NewHistogramVec(prometheus.HistogramOpts{}, []string{"stage"}),
-				unsupportedLogEntries: prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"service", "level"}),
-			},
 			serviceLabels: []ServiceLabel{
 				WithSmtpLabels([]string{"relay/smtp"}),
 			},
 		},
 	}
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			e := &PostfixExporter{
-				cleanupLabels:                   defaultCleanupLabels,
-				lmtpLabels:                      defaultLmtpLabels,
-				pipeLabels:                      defaultPipeLabels,
-				qmgrLabels:                      defaultQmgrLabels,
-				smtpLabels:                      defaultSmtpLabels,
-				smtpdLabels:                     defaultSmtpdLabels,
-				bounceLabels:                    defaultBounceLabels,
-				virtualLabels:                   defaultVirtualLabels,
-				showqPath:                       tt.fields.showqPath,
-				logSrc:                          tt.fields.logSrc,
-				cleanupProcesses:                tt.fields.cleanupProcesses,
-				cleanupRejects:                  tt.fields.cleanupRejects,
-				cleanupNotAccepted:              tt.fields.cleanupNotAccepted,
-				lmtpDelays:                      tt.fields.lmtpDelays,
-				pipeDelays:                      tt.fields.pipeDelays,
-				qmgrInsertsNrcpt:                tt.fields.qmgrInsertsNrcpt,
-				qmgrInsertsSize:                 tt.fields.qmgrInsertsSize,
-				qmgrRemoves:                     tt.fields.qmgrRemoves,
-				qmgrExpires:                     tt.fields.qmgrExpires,
-				smtpDelays:                      tt.fields.smtpDelays,
-				smtpTLSConnects:                 tt.fields.smtpTLSConnects,
-				smtpDeferreds:                   tt.fields.smtpDeferreds,
-				smtpStatusDeferred:              tt.fields.smtpStatusDeferred,
-				smtpProcesses:                   tt.fields.smtpProcesses,
-				smtpDeferredDSN:                 tt.fields.smtpDeferredDSN,
-				smtpBouncedDSN:                  tt.fields.smtpBouncedDSN,
-				smtpdConnects:                   tt.fields.smtpdConnects,
-				smtpdDisconnects:                tt.fields.smtpdDisconnects,
-				smtpdFCrDNSErrors:               tt.fields.smtpdFCrDNSErrors,
-				smtpdLostConnections:            tt.fields.smtpdLostConnections,
-				smtpdProcesses:                  tt.fields.smtpdProcesses,
-				smtpdRejects:                    tt.fields.smtpdRejects,
-				smtpdSASLAuthenticationFailures: tt.fields.smtpdSASLAuthenticationFailures,
-				smtpdTLSConnects:                tt.fields.smtpdTLSConnects,
-				bounceNonDelivery:               tt.fields.bounceNonDelivery,
-				virtualDelivered:                tt.fields.virtualDelivered,
-				unsupportedLogEntries:           tt.fields.unsupportedLogEntries,
-				logUnsupportedLines:             true,
-			}
-			for _, serviceLabel := range tt.serviceLabels {
-				serviceLabel(e)
-			}
-			for _, line := range tt.args.line {
-				e.CollectFromLogLine(line)
-			}
-			assertCounterEquals(t, e.qmgrRemoves, tt.args.removedCount, "Wrong number of lines counted")
-			assertCounterEquals(t, e.qmgrExpires, tt.args.expiredCount, "Wrong number of qmgr expired lines counted")
-			assertCounterEquals(t, e.smtpdSASLAuthenticationFailures, tt.args.saslFailedCount, "Wrong number of Sasl counter counted")
-			assertCounterEquals(t, e.smtpTLSConnects, tt.args.outgoingTLS, "Wrong number of TLS connections counted")
-			assertCounterEquals(t, e.smtpdProcesses, tt.args.smtpdMessagesProcessed, "Wrong number of smtpd messages processed")
-			assertCounterEquals(t, e.smtpProcesses, tt.args.smtpMessagesProcessed, "Wrong number of smtp messages processed")
-			assertCounterEquals(t, e.smtpDeferredDSN, tt.args.smtpDeferred, "Wrong number of smtp deferred")
-			assertCounterEquals(t, e.smtpBouncedDSN, tt.args.smtpBounced, "Wrong number of smtp bounced")
-			assertCounterEquals(t, e.bounceNonDelivery, tt.args.bounceNonDelivery, "Wrong number of non delivery notifications")
-			assertCounterEquals(t, e.virtualDelivered, tt.args.virtualDelivered, "Wrong number of delivered mails")
-			assertCounterVecMetricsEquals(t, e.unsupportedLogEntries, tt.args.unsupportedLogEntries, "Wrong number of unsupportedLogEntries")
+			t.Parallel()
+			testPostfixExporter_CollectFromLogline(t, tt)
 		})
 	}
 }
 func assertCounterEquals(t *testing.T, counter prometheus.Collector, expected int, message string) {
-
-	if counter != nil && expected > 0 {
-		switch counter := counter.(type) {
-		case *prometheus.CounterVec:
-			metricsChan := make(chan prometheus.Metric)
-			go func() {
-				counter.Collect(metricsChan)
-				close(metricsChan)
-			}()
-			var count = 0
-			for metric := range metricsChan {
-				metricDto := io_prometheus_client.Metric{}
-				_ = metric.Write(&metricDto)
-				count += int(*metricDto.Counter.Value)
-			}
-			assert.Equal(t, expected, count, message)
-		case prometheus.Counter:
-			metricsChan := make(chan prometheus.Metric)
-			go func() {
-				counter.Collect(metricsChan)
-				close(metricsChan)
-			}()
-			var count = 0
-			for metric := range metricsChan {
-				metricDto := io_prometheus_client.Metric{}
-				_ = metric.Write(&metricDto)
-				count += int(*metricDto.Counter.Value)
-			}
-			assert.Equal(t, expected, count, message)
-		default:
-			t.Fatal("Type not implemented")
-		}
+	if counter == nil || expected <= 0 {
+		return
 	}
-}
-func assertCounterVecMetricsEquals(t *testing.T, counter *prometheus.CounterVec, expected []testCounterMetric, message string) {
-	if expected != nil {
+	switch counter := counter.(type) {
+	case *prometheus.CounterVec:
 		metricsChan := make(chan prometheus.Metric)
 		go func() {
 			counter.Collect(metricsChan)
 			close(metricsChan)
 		}()
-		var res []testCounterMetric
+		var count = 0
 		for metric := range metricsChan {
 			metricDto := io_prometheus_client.Metric{}
 			_ = metric.Write(&metricDto)
-			cm := testCounterMetric{
-				Label:        metricDto.Label,
-				CounterValue: *metricDto.Counter.Value,
-			}
-			res = append(res, cm)
+			count += int(*metricDto.Counter.Value)
 		}
-		assert.ElementsMatch(t, expected, res, message)
+		assert.Equal(t, expected, count, message)
+	case prometheus.Counter:
+		metricsChan := make(chan prometheus.Metric)
+		go func() {
+			counter.Collect(metricsChan)
+			close(metricsChan)
+		}()
+		var count = 0
+		for metric := range metricsChan {
+			metricDto := io_prometheus_client.Metric{}
+			_ = metric.Write(&metricDto)
+			count += int(*metricDto.Counter.Value)
+		}
+		assert.Equal(t, expected, count, message)
+	default:
+		t.Fatal("Type not implemented")
 	}
+}
+func assertCounterVecMetricsEquals(t *testing.T, counter *prometheus.CounterVec, expected []testCounterMetric, message string) {
+	if expected == nil {
+		return
+	}
+	metricsChan := make(chan prometheus.Metric)
+	go func() {
+		counter.Collect(metricsChan)
+		close(metricsChan)
+	}()
+	var res []testCounterMetric
+	for metric := range metricsChan {
+		metricDto := io_prometheus_client.Metric{}
+		_ = metric.Write(&metricDto)
+		cm := testCounterMetric{
+			Label:        metricDto.Label,
+			CounterValue: *metricDto.Counter.Value,
+		}
+		res = append(res, cm)
+	}
+	assert.ElementsMatch(t, expected, res, message)
 }
