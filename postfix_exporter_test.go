@@ -17,31 +17,50 @@ func stringPtr(s string) *string {
 	return &s
 }
 
+type args struct {
+	line                   []string
+	unsupportedLogEntries  []testCounterMetric
+	removedCount           int
+	expiredCount           int
+	saslFailedCount        int
+	outgoingTLS            int
+	smtpdMessagesProcessed int
+	smtpMessagesProcessed  int
+	smtpDeferred           int
+	smtpBounced            int
+	bounceNonDelivery      int
+	virtualDelivered       int
+}
+
+type testCase struct {
+	serviceLabels []ServiceLabel
+	name          string
+	args          args
+}
+
+func testPostfixExporter_CollectFromLogline(t *testing.T, tt testCase) {
+	t.Helper()
+	e := NewPostfixExporter("", nil, true, tt.serviceLabels...)
+
+	for _, line := range tt.args.line {
+		e.CollectFromLogLine(line)
+	}
+	assertCounterEquals(t, e.qmgrRemoves, tt.args.removedCount, "Wrong number of lines counted")
+	assertCounterEquals(t, e.qmgrExpires, tt.args.expiredCount, "Wrong number of qmgr expired lines counted")
+	assertCounterEquals(t, e.smtpdSASLAuthenticationFailures, tt.args.saslFailedCount, "Wrong number of Sasl counter counted")
+	assertCounterEquals(t, e.smtpTLSConnects, tt.args.outgoingTLS, "Wrong number of TLS connections counted")
+	assertCounterEquals(t, e.smtpdProcesses, tt.args.smtpdMessagesProcessed, "Wrong number of smtpd messages processed")
+	assertCounterEquals(t, e.smtpProcesses, tt.args.smtpMessagesProcessed, "Wrong number of smtp messages processed")
+	assertCounterEquals(t, e.smtpDeferredDSN, tt.args.smtpDeferred, "Wrong number of smtp deferred")
+	assertCounterEquals(t, e.smtpBouncedDSN, tt.args.smtpBounced, "Wrong number of smtp bounced")
+	assertCounterEquals(t, e.bounceNonDelivery, tt.args.bounceNonDelivery, "Wrong number of non delivery notifications")
+	assertCounterEquals(t, e.virtualDelivered, tt.args.virtualDelivered, "Wrong number of delivered mails")
+	assertCounterVecMetricsEquals(t, e.unsupportedLogEntries, tt.args.unsupportedLogEntries, "Wrong number of unsupportedLogEntries")
+}
+
 func TestPostfixExporter_CollectFromLogline(t *testing.T) {
-	type fields struct {
-		logSrc    LogSource
-		showqPath string
-	}
-	type args struct {
-		line                   []string
-		unsupportedLogEntries  []testCounterMetric
-		removedCount           int
-		expiredCount           int
-		saslFailedCount        int
-		outgoingTLS            int
-		smtpdMessagesProcessed int
-		smtpMessagesProcessed  int
-		smtpDeferred           int
-		smtpBounced            int
-		bounceNonDelivery      int
-		virtualDelivered       int
-	}
-	tests := []struct {
-		serviceLabels []ServiceLabel
-		name          string
-		fields        fields
-		args          args
-	}{
+	t.Parallel()
+	tests := []testCase{
 		{
 			name: "Single line",
 			args: args{
@@ -259,78 +278,66 @@ func TestPostfixExporter_CollectFromLogline(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			e := NewPostfixExporter(tt.fields.showqPath, tt.fields.logSrc, true, tt.serviceLabels...)
-
-			for _, line := range tt.args.line {
-				e.CollectFromLogLine(line)
-			}
-			assertCounterEquals(t, e.qmgrRemoves, tt.args.removedCount, "Wrong number of lines counted")
-			assertCounterEquals(t, e.qmgrExpires, tt.args.expiredCount, "Wrong number of qmgr expired lines counted")
-			assertCounterEquals(t, e.smtpdSASLAuthenticationFailures, tt.args.saslFailedCount, "Wrong number of Sasl counter counted")
-			assertCounterEquals(t, e.smtpTLSConnects, tt.args.outgoingTLS, "Wrong number of TLS connections counted")
-			assertCounterEquals(t, e.smtpdProcesses, tt.args.smtpdMessagesProcessed, "Wrong number of smtpd messages processed")
-			assertCounterEquals(t, e.smtpProcesses, tt.args.smtpMessagesProcessed, "Wrong number of smtp messages processed")
-			assertCounterEquals(t, e.smtpDeferredDSN, tt.args.smtpDeferred, "Wrong number of smtp deferred")
-			assertCounterEquals(t, e.smtpBouncedDSN, tt.args.smtpBounced, "Wrong number of smtp bounced")
-			assertCounterEquals(t, e.bounceNonDelivery, tt.args.bounceNonDelivery, "Wrong number of non delivery notifications")
-			assertCounterEquals(t, e.virtualDelivered, tt.args.virtualDelivered, "Wrong number of delivered mails")
-			assertCounterVecMetricsEquals(t, e.unsupportedLogEntries, tt.args.unsupportedLogEntries, "Wrong number of unsupportedLogEntries")
+			t.Parallel()
+			testPostfixExporter_CollectFromLogline(t, tt)
 		})
 	}
 }
 func assertCounterEquals(t *testing.T, counter prometheus.Collector, expected int, message string) {
-
-	if counter != nil && expected > 0 {
-		switch counter := counter.(type) {
-		case *prometheus.CounterVec:
-			metricsChan := make(chan prometheus.Metric)
-			go func() {
-				counter.Collect(metricsChan)
-				close(metricsChan)
-			}()
-			var count = 0
-			for metric := range metricsChan {
-				metricDto := io_prometheus_client.Metric{}
-				_ = metric.Write(&metricDto)
-				count += int(*metricDto.Counter.Value)
-			}
-			assert.Equal(t, expected, count, message)
-		case prometheus.Counter:
-			metricsChan := make(chan prometheus.Metric)
-			go func() {
-				counter.Collect(metricsChan)
-				close(metricsChan)
-			}()
-			var count = 0
-			for metric := range metricsChan {
-				metricDto := io_prometheus_client.Metric{}
-				_ = metric.Write(&metricDto)
-				count += int(*metricDto.Counter.Value)
-			}
-			assert.Equal(t, expected, count, message)
-		default:
-			t.Fatal("Type not implemented")
-		}
+	if counter == nil || expected <= 0 {
+		return
 	}
-}
-func assertCounterVecMetricsEquals(t *testing.T, counter *prometheus.CounterVec, expected []testCounterMetric, message string) {
-	if expected != nil {
+	switch counter := counter.(type) {
+	case *prometheus.CounterVec:
 		metricsChan := make(chan prometheus.Metric)
 		go func() {
 			counter.Collect(metricsChan)
 			close(metricsChan)
 		}()
-		var res []testCounterMetric
+		var count = 0
 		for metric := range metricsChan {
 			metricDto := io_prometheus_client.Metric{}
 			_ = metric.Write(&metricDto)
-			cm := testCounterMetric{
-				Label:        metricDto.Label,
-				CounterValue: *metricDto.Counter.Value,
-			}
-			res = append(res, cm)
+			count += int(*metricDto.Counter.Value)
 		}
-		assert.ElementsMatch(t, expected, res, message)
+		assert.Equal(t, expected, count, message)
+	case prometheus.Counter:
+		metricsChan := make(chan prometheus.Metric)
+		go func() {
+			counter.Collect(metricsChan)
+			close(metricsChan)
+		}()
+		var count = 0
+		for metric := range metricsChan {
+			metricDto := io_prometheus_client.Metric{}
+			_ = metric.Write(&metricDto)
+			count += int(*metricDto.Counter.Value)
+		}
+		assert.Equal(t, expected, count, message)
+	default:
+		t.Fatal("Type not implemented")
 	}
+}
+func assertCounterVecMetricsEquals(t *testing.T, counter *prometheus.CounterVec, expected []testCounterMetric, message string) {
+	if expected == nil {
+		return
+	}
+	metricsChan := make(chan prometheus.Metric)
+	go func() {
+		counter.Collect(metricsChan)
+		close(metricsChan)
+	}()
+	var res []testCounterMetric
+	for metric := range metricsChan {
+		metricDto := io_prometheus_client.Metric{}
+		_ = metric.Write(&metricDto)
+		cm := testCounterMetric{
+			Label:        metricDto.Label,
+			CounterValue: *metricDto.Counter.Value,
+		}
+		res = append(res, cm)
+	}
+	assert.ElementsMatch(t, expected, res, message)
 }
