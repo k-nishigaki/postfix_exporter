@@ -26,6 +26,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -94,6 +95,8 @@ type PostfixExporter struct {
 	qmgrLabels    []string
 	pipeLabels    []string
 	lmtpLabels    []string
+
+	once sync.Once
 
 	logUnsupportedLines bool
 }
@@ -607,9 +610,192 @@ func WithVirtualLabels(labels []string) ServiceLabel {
 	}
 }
 
+func (e *PostfixExporter) init() {
+	timeBuckets := []float64{1e-3, 1e-2, 1e-1, 1.0, 10, 1 * 60, 1 * 60 * 60, 24 * 60 * 60, 2 * 24 * 60 * 60}
+
+	e.once.Do(func() {
+		e.cleanupProcesses = prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "postfix",
+			Name:      "cleanup_messages_processed_total",
+			Help:      "Total number of messages processed by cleanup.",
+		})
+		e.cleanupRejects = prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "postfix",
+			Name:      "cleanup_messages_rejected_total",
+			Help:      "Total number of messages rejected by cleanup.",
+		})
+		e.cleanupNotAccepted = prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "postfix",
+			Name:      "cleanup_messages_not_accepted_total",
+			Help:      "Total number of messages not accepted by cleanup.",
+		})
+		e.lmtpDelays = prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: "postfix",
+				Name:      "lmtp_delivery_delay_seconds",
+				Help:      "LMTP message processing time in seconds.",
+				Buckets:   timeBuckets,
+			},
+			[]string{"stage"})
+		e.pipeDelays = prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: "postfix",
+				Name:      "pipe_delivery_delay_seconds",
+				Help:      "Pipe message processing time in seconds.",
+				Buckets:   timeBuckets,
+			},
+			[]string{"relay", "stage"})
+		e.qmgrInsertsNrcpt = prometheus.NewHistogram(prometheus.HistogramOpts{
+			Namespace: "postfix",
+			Name:      "qmgr_messages_inserted_receipients",
+			Help:      "Number of receipients per message inserted into the mail queues.",
+			Buckets:   []float64{1, 2, 4, 8, 16, 32, 64, 128},
+		})
+		e.qmgrInsertsSize = prometheus.NewHistogram(prometheus.HistogramOpts{
+			Namespace: "postfix",
+			Name:      "qmgr_messages_inserted_size_bytes",
+			Help:      "Size of messages inserted into the mail queues in bytes.",
+			Buckets:   []float64{1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9},
+		})
+		e.qmgrRemoves = prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "postfix",
+			Name:      "qmgr_messages_removed_total",
+			Help:      "Total number of messages removed from mail queues.",
+		})
+		e.qmgrExpires = prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "postfix",
+			Name:      "qmgr_messages_expired_total",
+			Help:      "Total number of messages expired from mail queues.",
+		})
+		e.smtpDelays = prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: "postfix",
+				Name:      "smtp_delivery_delay_seconds",
+				Help:      "SMTP message processing time in seconds.",
+				Buckets:   timeBuckets,
+			},
+			[]string{"stage"})
+		e.smtpTLSConnects = prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "postfix",
+				Name:      "smtp_tls_connections_total",
+				Help:      "Total number of outgoing TLS connections.",
+			},
+			[]string{"trust", "protocol", "cipher", "secret_bits", "algorithm_bits"})
+		e.smtpDeferreds = prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "postfix",
+			Name:      "smtp_deferred_messages_total",
+			Help:      "Total number of messages that have been deferred on SMTP.",
+		})
+		e.smtpProcesses = prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "postfix",
+				Name:      "smtp_messages_processed_total",
+				Help:      "Total number of messages that have been processed by the smtp process.",
+			},
+			[]string{"status"})
+		e.smtpDeferredDSN = prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "postfix",
+				Name:      "smtp_deferred_messages_by_dsn_total",
+				Help:      "Total number of messages that have been deferred on SMTP by DSN.",
+			},
+			[]string{"dsn"})
+		e.smtpBouncedDSN = prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "postfix",
+				Name:      "smtp_bounced_messages_by_dsn_total",
+				Help:      "Total number of messages that have been bounced on SMTP by DSN.",
+			},
+			[]string{"dsn"})
+		e.smtpConnectionTimedOut = prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "postfix",
+			Name:      "smtp_connection_timed_out_total",
+			Help:      "Total number of messages that have been deferred on SMTP.",
+		})
+		e.smtpdConnects = prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "postfix",
+			Name:      "smtpd_connects_total",
+			Help:      "Total number of incoming connections.",
+		})
+		e.smtpdDisconnects = prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "postfix",
+			Name:      "smtpd_disconnects_total",
+			Help:      "Total number of incoming disconnections.",
+		})
+		e.smtpdFCrDNSErrors = prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "postfix",
+			Name:      "smtpd_forward_confirmed_reverse_dns_errors_total",
+			Help:      "Total number of connections for which forward-confirmed DNS cannot be resolved.",
+		})
+		e.smtpdLostConnections = prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "postfix",
+				Name:      "smtpd_connections_lost_total",
+				Help:      "Total number of connections lost.",
+			},
+			[]string{"after_stage"})
+		e.smtpdProcesses = prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "postfix",
+				Name:      "smtpd_messages_processed_total",
+				Help:      "Total number of messages processed.",
+			},
+			[]string{"sasl_method"})
+		e.smtpdRejects = prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "postfix",
+				Name:      "smtpd_messages_rejected_total",
+				Help:      "Total number of NOQUEUE rejects.",
+			},
+			[]string{"code"})
+		e.smtpdSASLAuthenticationFailures = prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "postfix",
+			Name:      "smtpd_sasl_authentication_failures_total",
+			Help:      "Total number of SASL authentication failures.",
+		})
+		e.smtpdTLSConnects = prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "postfix",
+				Name:      "smtpd_tls_connections_total",
+				Help:      "Total number of incoming TLS connections.",
+			},
+			[]string{"trust", "protocol", "cipher", "secret_bits", "algorithm_bits"})
+		e.unsupportedLogEntries = prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "postfix",
+				Name:      "unsupported_log_entries_total",
+				Help:      "Log entries that could not be processed.",
+			},
+			[]string{"service", "level"})
+		e.smtpStatusDeferred = prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "postfix",
+			Name:      "smtp_status_deferred",
+			Help:      "Total number of messages deferred.",
+		})
+		e.opendkimSignatureAdded = prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "opendkim",
+				Name:      "signatures_added_total",
+				Help:      "Total number of messages signed.",
+			},
+			[]string{"subject", "domain"},
+		)
+		e.bounceNonDelivery = prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "postfix",
+			Name:      "bounce_non_delivery_notification_total",
+			Help:      "Total number of non delivery notification sent by bounce.",
+		})
+		e.virtualDelivered = prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "postfix",
+			Name:      "virtual_delivered_total",
+			Help:      "Total number of mail delivered to a virtual mailbox.",
+		})
+	})
+}
+
 // NewPostfixExporter creates a new Postfix exporter instance.
 func NewPostfixExporter(showqPath string, logSrc LogSource, logUnsupportedLines bool, serviceLabels ...ServiceLabel) *PostfixExporter {
-	timeBuckets := []float64{1e-3, 1e-2, 1e-1, 1.0, 10, 1 * 60, 1 * 60 * 60, 24 * 60 * 60, 2 * 24 * 60 * 60}
 	postfixExporter := &PostfixExporter{
 		cleanupLabels:       defaultCleanupLabels,
 		lmtpLabels:          defaultLmtpLabels,
@@ -622,189 +808,13 @@ func NewPostfixExporter(showqPath string, logSrc LogSource, logUnsupportedLines 
 		logUnsupportedLines: logUnsupportedLines,
 		showqPath:           showqPath,
 		logSrc:              logSrc,
-
-		cleanupProcesses: prometheus.NewCounter(prometheus.CounterOpts{
-			Namespace: "postfix",
-			Name:      "cleanup_messages_processed_total",
-			Help:      "Total number of messages processed by cleanup.",
-		}),
-		cleanupRejects: prometheus.NewCounter(prometheus.CounterOpts{
-			Namespace: "postfix",
-			Name:      "cleanup_messages_rejected_total",
-			Help:      "Total number of messages rejected by cleanup.",
-		}),
-		cleanupNotAccepted: prometheus.NewCounter(prometheus.CounterOpts{
-			Namespace: "postfix",
-			Name:      "cleanup_messages_not_accepted_total",
-			Help:      "Total number of messages not accepted by cleanup.",
-		}),
-		lmtpDelays: prometheus.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Namespace: "postfix",
-				Name:      "lmtp_delivery_delay_seconds",
-				Help:      "LMTP message processing time in seconds.",
-				Buckets:   timeBuckets,
-			},
-			[]string{"stage"}),
-		pipeDelays: prometheus.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Namespace: "postfix",
-				Name:      "pipe_delivery_delay_seconds",
-				Help:      "Pipe message processing time in seconds.",
-				Buckets:   timeBuckets,
-			},
-			[]string{"relay", "stage"}),
-		qmgrInsertsNrcpt: prometheus.NewHistogram(prometheus.HistogramOpts{
-			Namespace: "postfix",
-			Name:      "qmgr_messages_inserted_receipients",
-			Help:      "Number of receipients per message inserted into the mail queues.",
-			Buckets:   []float64{1, 2, 4, 8, 16, 32, 64, 128},
-		}),
-		qmgrInsertsSize: prometheus.NewHistogram(prometheus.HistogramOpts{
-			Namespace: "postfix",
-			Name:      "qmgr_messages_inserted_size_bytes",
-			Help:      "Size of messages inserted into the mail queues in bytes.",
-			Buckets:   []float64{1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9},
-		}),
-		qmgrRemoves: prometheus.NewCounter(prometheus.CounterOpts{
-			Namespace: "postfix",
-			Name:      "qmgr_messages_removed_total",
-			Help:      "Total number of messages removed from mail queues.",
-		}),
-		qmgrExpires: prometheus.NewCounter(prometheus.CounterOpts{
-			Namespace: "postfix",
-			Name:      "qmgr_messages_expired_total",
-			Help:      "Total number of messages expired from mail queues.",
-		}),
-		smtpDelays: prometheus.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Namespace: "postfix",
-				Name:      "smtp_delivery_delay_seconds",
-				Help:      "SMTP message processing time in seconds.",
-				Buckets:   timeBuckets,
-			},
-			[]string{"stage"}),
-		smtpTLSConnects: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: "postfix",
-				Name:      "smtp_tls_connections_total",
-				Help:      "Total number of outgoing TLS connections.",
-			},
-			[]string{"trust", "protocol", "cipher", "secret_bits", "algorithm_bits"}),
-		smtpDeferreds: prometheus.NewCounter(prometheus.CounterOpts{
-			Namespace: "postfix",
-			Name:      "smtp_deferred_messages_total",
-			Help:      "Total number of messages that have been deferred on SMTP.",
-		}),
-		smtpProcesses: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: "postfix",
-				Name:      "smtp_messages_processed_total",
-				Help:      "Total number of messages that have been processed by the smtp process.",
-			},
-			[]string{"status"}),
-		smtpDeferredDSN: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: "postfix",
-				Name:      "smtp_deferred_messages_by_dsn_total",
-				Help:      "Total number of messages that have been deferred on SMTP by DSN.",
-			},
-			[]string{"dsn"}),
-		smtpBouncedDSN: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: "postfix",
-				Name:      "smtp_bounced_messages_by_dsn_total",
-				Help:      "Total number of messages that have been bounced on SMTP by DSN.",
-			},
-			[]string{"dsn"}),
-		smtpConnectionTimedOut: prometheus.NewCounter(prometheus.CounterOpts{
-			Namespace: "postfix",
-			Name:      "smtp_connection_timed_out_total",
-			Help:      "Total number of messages that have been deferred on SMTP.",
-		}),
-		smtpdConnects: prometheus.NewCounter(prometheus.CounterOpts{
-			Namespace: "postfix",
-			Name:      "smtpd_connects_total",
-			Help:      "Total number of incoming connections.",
-		}),
-		smtpdDisconnects: prometheus.NewCounter(prometheus.CounterOpts{
-			Namespace: "postfix",
-			Name:      "smtpd_disconnects_total",
-			Help:      "Total number of incoming disconnections.",
-		}),
-		smtpdFCrDNSErrors: prometheus.NewCounter(prometheus.CounterOpts{
-			Namespace: "postfix",
-			Name:      "smtpd_forward_confirmed_reverse_dns_errors_total",
-			Help:      "Total number of connections for which forward-confirmed DNS cannot be resolved.",
-		}),
-		smtpdLostConnections: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: "postfix",
-				Name:      "smtpd_connections_lost_total",
-				Help:      "Total number of connections lost.",
-			},
-			[]string{"after_stage"}),
-		smtpdProcesses: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: "postfix",
-				Name:      "smtpd_messages_processed_total",
-				Help:      "Total number of messages processed.",
-			},
-			[]string{"sasl_method"}),
-		smtpdRejects: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: "postfix",
-				Name:      "smtpd_messages_rejected_total",
-				Help:      "Total number of NOQUEUE rejects.",
-			},
-			[]string{"code"}),
-		smtpdSASLAuthenticationFailures: prometheus.NewCounter(prometheus.CounterOpts{
-			Namespace: "postfix",
-			Name:      "smtpd_sasl_authentication_failures_total",
-			Help:      "Total number of SASL authentication failures.",
-		}),
-		smtpdTLSConnects: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: "postfix",
-				Name:      "smtpd_tls_connections_total",
-				Help:      "Total number of incoming TLS connections.",
-			},
-			[]string{"trust", "protocol", "cipher", "secret_bits", "algorithm_bits"}),
-		unsupportedLogEntries: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: "postfix",
-				Name:      "unsupported_log_entries_total",
-				Help:      "Log entries that could not be processed.",
-			},
-			[]string{"service", "level"}),
-		smtpStatusDeferred: prometheus.NewCounter(prometheus.CounterOpts{
-			Namespace: "postfix",
-			Name:      "smtp_status_deferred",
-			Help:      "Total number of messages deferred.",
-		}),
-		opendkimSignatureAdded: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: "opendkim",
-				Name:      "signatures_added_total",
-				Help:      "Total number of messages signed.",
-			},
-			[]string{"subject", "domain"},
-		),
-		bounceNonDelivery: prometheus.NewCounter(prometheus.CounterOpts{
-			Namespace: "postfix",
-			Name:      "bounce_non_delivery_notification_total",
-			Help:      "Total number of non delivery notification sent by bounce.",
-		}),
-		virtualDelivered: prometheus.NewCounter(prometheus.CounterOpts{
-			Namespace: "postfix",
-			Name:      "virtual_delivered_total",
-			Help:      "Total number of mail delivered to a virtual mailbox.",
-		}),
 	}
 
 	for _, serviceLabel := range serviceLabels {
 		serviceLabel(postfixExporter)
 	}
+
+	postfixExporter.init()
 
 	return postfixExporter
 }

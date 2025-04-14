@@ -19,35 +19,8 @@ func stringPtr(s string) *string {
 
 func TestPostfixExporter_CollectFromLogline(t *testing.T) {
 	type fields struct {
-		smtpStatusDeferred              prometheus.Counter
-		smtpdDisconnects                prometheus.Counter
-		cleanupProcesses                prometheus.Counter
-		cleanupRejects                  prometheus.Counter
-		cleanupNotAccepted              prometheus.Counter
-		virtualDelivered                prometheus.Counter
-		bounceNonDelivery               prometheus.Counter
-		qmgrInsertsNrcpt                prometheus.Histogram
-		qmgrInsertsSize                 prometheus.Histogram
-		qmgrRemoves                     prometheus.Counter
-		qmgrExpires                     prometheus.Counter
-		smtpdSASLAuthenticationFailures prometheus.Counter
-		smtpdFCrDNSErrors               prometheus.Counter
-		smtpDeferreds                   prometheus.Counter
-		logSrc                          LogSource
-		smtpdConnects                   prometheus.Counter
-		lmtpDelays                      *prometheus.HistogramVec
-		smtpBouncedDSN                  *prometheus.CounterVec
-		smtpDeferredDSN                 *prometheus.CounterVec
-		smtpProcesses                   *prometheus.CounterVec
-		smtpTLSConnects                 *prometheus.CounterVec
-		smtpdRejects                    *prometheus.CounterVec
-		smtpdLostConnections            *prometheus.CounterVec
-		smtpDelays                      *prometheus.HistogramVec
-		smtpdTLSConnects                *prometheus.CounterVec
-		pipeDelays                      *prometheus.HistogramVec
-		smtpdProcesses                  *prometheus.CounterVec
-		unsupportedLogEntries           *prometheus.CounterVec
-		showqPath                       string
+		logSrc    LogSource
+		showqPath string
 	}
 	type args struct {
 		line                   []string
@@ -77,10 +50,6 @@ func TestPostfixExporter_CollectFromLogline(t *testing.T) {
 				},
 				removedCount:    1,
 				saslFailedCount: 0,
-			},
-			fields: fields{
-				qmgrRemoves:           prometheus.NewCounter(prometheus.CounterOpts{}),
-				unsupportedLogEntries: prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"service", "level"}),
 			},
 		},
 		{
@@ -122,10 +91,6 @@ func TestPostfixExporter_CollectFromLogline(t *testing.T) {
 				removedCount:    31,
 				saslFailedCount: 0,
 			},
-			fields: fields{
-				qmgrRemoves:           prometheus.NewCounter(prometheus.CounterOpts{}),
-				unsupportedLogEntries: prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"service", "level"}),
-			},
 		},
 		{
 			name: "qmgr expired",
@@ -135,9 +100,6 @@ func TestPostfixExporter_CollectFromLogline(t *testing.T) {
 					"Apr 10 14:50:16 mail postfix/qmgr[3663]: BACE842E73: from=<noreply@domain.com>, status=force-expired, returned to sender",
 				},
 				expiredCount: 2,
-			},
-			fields: fields{
-				qmgrExpires: prometheus.NewCounter(prometheus.CounterOpts{}),
 			},
 		},
 		{
@@ -150,11 +112,6 @@ func TestPostfixExporter_CollectFromLogline(t *testing.T) {
 				},
 				saslFailedCount: 1,
 				removedCount:    0,
-			},
-			fields: fields{
-				smtpdSASLAuthenticationFailures: prometheus.NewCounter(prometheus.CounterOpts{}),
-				unsupportedLogEntries:           prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"service", "level"}),
-				smtpProcesses:                   prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"status"}),
 			},
 		},
 		{
@@ -169,10 +126,6 @@ func TestPostfixExporter_CollectFromLogline(t *testing.T) {
 				outgoingTLS:            0,
 				smtpdMessagesProcessed: 2,
 			},
-			fields: fields{
-				unsupportedLogEntries: prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"service", "level"}),
-				smtpdProcesses:        prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"sasl_method"}),
-			},
 		},
 		{
 			name: "Issue #35",
@@ -186,11 +139,6 @@ func TestPostfixExporter_CollectFromLogline(t *testing.T) {
 				outgoingTLS:            2,
 				smtpdMessagesProcessed: 0,
 			},
-			fields: fields{
-				unsupportedLogEntries: prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"service", "level"}),
-				smtpTLSConnects:       prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"Verified", "TLSv1.2", "ECDHE-RSA-AES256-GCM-SHA384", "256", "256"}),
-				smtpProcesses:         prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"status"}),
-			},
 		},
 		{
 			name: "Testing delays",
@@ -203,10 +151,6 @@ func TestPostfixExporter_CollectFromLogline(t *testing.T) {
 				outgoingTLS:            0,
 				smtpdMessagesProcessed: 0,
 				smtpMessagesProcessed:  1,
-			},
-			fields: fields{
-				smtpDelays:    prometheus.NewHistogramVec(prometheus.HistogramOpts{}, []string{"stage"}),
-				smtpProcesses: prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"status"}),
 			},
 		},
 		{
@@ -223,15 +167,6 @@ func TestPostfixExporter_CollectFromLogline(t *testing.T) {
 				smtpBounced:           1,
 				bounceNonDelivery:     1,
 			},
-			fields: fields{
-				unsupportedLogEntries: prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"service", "level"}),
-				smtpDelays:            prometheus.NewHistogramVec(prometheus.HistogramOpts{}, []string{"stage"}),
-				smtpStatusDeferred:    prometheus.NewCounter(prometheus.CounterOpts{}),
-				smtpProcesses:         prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"status"}),
-				smtpDeferredDSN:       prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"dsn"}),
-				smtpBouncedDSN:        prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"dsn"}),
-				bounceNonDelivery:     prometheus.NewCounter(prometheus.CounterOpts{}),
-			},
 		},
 		{
 			name: "Testing virtual delivered",
@@ -240,9 +175,6 @@ func TestPostfixExporter_CollectFromLogline(t *testing.T) {
 					"Apr  7 15:35:20 123-mail postfix/virtual[20235]: 199041033BE: to=<me@domain.fr>, relay=virtual, delay=0.08, delays=0.08/0/0/0, dsn=2.0.0, status=sent (delivered to maildir)",
 				},
 				virtualDelivered: 1,
-			},
-			fields: fields{
-				virtualDelivered: prometheus.NewCounter(prometheus.CounterOpts{}),
 			},
 		},
 		{
@@ -296,9 +228,6 @@ func TestPostfixExporter_CollectFromLogline(t *testing.T) {
 					},
 				},
 			},
-			fields: fields{
-				unsupportedLogEntries: prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"service", "level"}),
-			},
 		},
 		{
 			name: "User-defined service labels",
@@ -324,11 +253,6 @@ func TestPostfixExporter_CollectFromLogline(t *testing.T) {
 					},
 				},
 			},
-			fields: fields{
-				smtpProcesses:         prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"status"}),
-				smtpDelays:            prometheus.NewHistogramVec(prometheus.HistogramOpts{}, []string{"stage"}),
-				unsupportedLogEntries: prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"service", "level"}),
-			},
 			serviceLabels: []ServiceLabel{
 				WithSmtpLabels([]string{"relay/smtp"}),
 			},
@@ -336,49 +260,8 @@ func TestPostfixExporter_CollectFromLogline(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			e := &PostfixExporter{
-				cleanupLabels:                   defaultCleanupLabels,
-				lmtpLabels:                      defaultLmtpLabels,
-				pipeLabels:                      defaultPipeLabels,
-				qmgrLabels:                      defaultQmgrLabels,
-				smtpLabels:                      defaultSmtpLabels,
-				smtpdLabels:                     defaultSmtpdLabels,
-				bounceLabels:                    defaultBounceLabels,
-				virtualLabels:                   defaultVirtualLabels,
-				showqPath:                       tt.fields.showqPath,
-				logSrc:                          tt.fields.logSrc,
-				cleanupProcesses:                tt.fields.cleanupProcesses,
-				cleanupRejects:                  tt.fields.cleanupRejects,
-				cleanupNotAccepted:              tt.fields.cleanupNotAccepted,
-				lmtpDelays:                      tt.fields.lmtpDelays,
-				pipeDelays:                      tt.fields.pipeDelays,
-				qmgrInsertsNrcpt:                tt.fields.qmgrInsertsNrcpt,
-				qmgrInsertsSize:                 tt.fields.qmgrInsertsSize,
-				qmgrRemoves:                     tt.fields.qmgrRemoves,
-				qmgrExpires:                     tt.fields.qmgrExpires,
-				smtpDelays:                      tt.fields.smtpDelays,
-				smtpTLSConnects:                 tt.fields.smtpTLSConnects,
-				smtpDeferreds:                   tt.fields.smtpDeferreds,
-				smtpStatusDeferred:              tt.fields.smtpStatusDeferred,
-				smtpProcesses:                   tt.fields.smtpProcesses,
-				smtpDeferredDSN:                 tt.fields.smtpDeferredDSN,
-				smtpBouncedDSN:                  tt.fields.smtpBouncedDSN,
-				smtpdConnects:                   tt.fields.smtpdConnects,
-				smtpdDisconnects:                tt.fields.smtpdDisconnects,
-				smtpdFCrDNSErrors:               tt.fields.smtpdFCrDNSErrors,
-				smtpdLostConnections:            tt.fields.smtpdLostConnections,
-				smtpdProcesses:                  tt.fields.smtpdProcesses,
-				smtpdRejects:                    tt.fields.smtpdRejects,
-				smtpdSASLAuthenticationFailures: tt.fields.smtpdSASLAuthenticationFailures,
-				smtpdTLSConnects:                tt.fields.smtpdTLSConnects,
-				bounceNonDelivery:               tt.fields.bounceNonDelivery,
-				virtualDelivered:                tt.fields.virtualDelivered,
-				unsupportedLogEntries:           tt.fields.unsupportedLogEntries,
-				logUnsupportedLines:             true,
-			}
-			for _, serviceLabel := range tt.serviceLabels {
-				serviceLabel(e)
-			}
+			e := NewPostfixExporter(tt.fields.showqPath, tt.fields.logSrc, true, tt.serviceLabels...)
+
 			for _, line := range tt.args.line {
 				e.CollectFromLogLine(line)
 			}
