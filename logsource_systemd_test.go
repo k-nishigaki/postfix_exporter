@@ -5,7 +5,6 @@ package main
 
 import (
 	"context"
-	"io"
 	"os"
 	"testing"
 	"time"
@@ -22,8 +21,8 @@ func TestNewSystemdLogSource(t *testing.T) {
 	}
 
 	assert.Equal(t, []string{"_SYSTEMD_SLICE=aslice"}, j.addMatchCalls, "A match should be added for slice.")
-	assert.Equal(t, []uint64{1234567890000000}, j.seekRealtimeUsecCalls, "A call to SeekRealtimeUsec should be made.")
-	assert.Equal(t, []time.Duration{1 * time.Second}, j.waitCalls, "A call to Wait should be made.")
+	assert.Equal(t, 1, j.seekTailCalls, "A call to SeekTail should be made.")
+	assert.Equal(t, 0, len(j.waitCalls), "No call to Wait should be made yet.")
 
 	if err := src.Close(); err != nil {
 		t.Fatalf("Close failed: %v", err)
@@ -70,6 +69,9 @@ func TestSystemdLogSource_Read(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Read failed: %v", err)
 	}
+	assert.Equal(t, []time.Duration{10 * time.Second}, j.waitCalls, "A Wait call should be made")
+	assert.Equal(t, 2, j.seekTailCalls, "Two seekTail calls expected")
+	assert.Equal(t, []uint64{1}, j.previousSkipCalls, "One previousSkipCall expected.")
 	assert.Equal(t, "Feb 13 23:31:30 ahost anid[123]: aline", s, "Read should get data from the journal entry.")
 }
 
@@ -86,7 +88,7 @@ func TestSystemdLogSource_ReadEOF(t *testing.T) {
 	defer src.Close()
 
 	_, err = src.Read(ctx)
-	assert.Equal(t, io.EOF, err, "Should interpret Next 0 as EOF.")
+	assert.Equal(t, SystemdNoMoreEntries, err, "Should interpret Next 0 as no more entries.")
 }
 
 func TestMain(m *testing.M) {
@@ -101,14 +103,15 @@ func TestMain(m *testing.M) {
 }
 
 type fakeSystemdJournal struct {
-	getEntryError         error
-	nextError             error
-	getEntryValues        []sdjournal.JournalEntry
-	nextValues            []uint64
-	addMatchCalls         []string
-	seekRealtimeUsecCalls []uint64
-	waitCalls             []time.Duration
-	closeCalls            int
+	getEntryError     error
+	nextError         error
+	getEntryValues    []sdjournal.JournalEntry
+	nextValues        []uint64
+	addMatchCalls     []string
+	previousSkipCalls []uint64
+	waitCalls         []time.Duration
+	closeCalls        int
+	seekTailCalls     int
 }
 
 func (j *fakeSystemdJournal) AddMatch(match string) error {
@@ -139,12 +142,21 @@ func (j *fakeSystemdJournal) Next() (uint64, error) {
 	return v, nil
 }
 
-func (j *fakeSystemdJournal) SeekRealtimeUsec(usec uint64) error {
-	j.seekRealtimeUsecCalls = append(j.seekRealtimeUsecCalls, usec)
+func (j *fakeSystemdJournal) SeekTail() error {
+	j.seekTailCalls++
 	return nil
+}
+
+func (j *fakeSystemdJournal) PreviousSkip(skip uint64) (uint64, error) {
+	j.previousSkipCalls = append(j.previousSkipCalls, skip)
+	return skip, nil
 }
 
 func (j *fakeSystemdJournal) Wait(timeout time.Duration) int {
 	j.waitCalls = append(j.waitCalls, timeout)
-	return 0
+	if len(j.waitCalls) == 1 {
+		// first wait call
+		return sdjournal.SD_JOURNAL_INVALIDATE
+	}
+	return sdjournal.SD_JOURNAL_APPEND
 }
