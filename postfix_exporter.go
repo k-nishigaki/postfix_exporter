@@ -15,6 +15,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"regexp"
 	"slices"
@@ -31,6 +32,8 @@ var (
 		prometheus.BuildFQName("postfix", "", "up"),
 		"Whether scraping Postfix's metrics was successful.",
 		[]string{"path"}, nil)
+
+	SystemdNoMoreEntries = errors.New("No more journal entries")
 )
 
 // PostfixExporter holds the state that should be preserved by the

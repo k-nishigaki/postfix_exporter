@@ -5,7 +5,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -36,8 +35,6 @@ type SystemdJournal interface {
 	PreviousSkip(skip uint64) (uint64, error)
 	Wait(timeout time.Duration) int
 }
-
-var SystemdNoMoreEntries = errors.New("No more journal entries")
 
 // NewSystemdLogSource returns a log source for reading Systemd
 // journal entries. `unit` and `slice` provide filtering if non-empty
