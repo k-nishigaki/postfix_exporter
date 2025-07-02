@@ -44,11 +44,6 @@ func (s *Showq) collectTextualShowqFromScanner(file io.Reader) error {
 	scanner := bufio.NewScanner(file)
 	scanner.Split(bufio.ScanLines)
 	queueSizes := make(map[string]float64)
-	// Initialize all queue buckets to zero.
-	for _, q := range []string{"active", "hold", "other"} {
-		s.sizeHistogram.WithLabelValues(q)
-		s.ageHistogram.WithLabelValues(q)
-	}
 
 	location, err := time.LoadLocation("Local")
 	if err != nil {
@@ -135,12 +130,6 @@ func (s *Showq) collectBinaryShowqFromScanner(file io.Reader) error {
 	scanner := bufio.NewScanner(file)
 	scanner.Split(ScanNullTerminatedEntries)
 	queueSizes := make(map[string]float64)
-
-	// Initialize all queue buckets to zero.
-	for _, q := range []string{"active", "deferred", "hold", "incoming", "maildrop"} {
-		s.sizeHistogram.WithLabelValues(q)
-		s.ageHistogram.WithLabelValues(q)
-	}
 
 	now := float64(time.Now().UnixNano()) / 1e9
 	queue := "unknown"
