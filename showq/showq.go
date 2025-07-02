@@ -22,17 +22,19 @@ var (
 )
 
 type Showq struct {
-	ageHistogram  *prometheus.HistogramVec
-	sizeHistogram *prometheus.HistogramVec
-	readerFunc    func(io.Reader, chan<- prometheus.Metric) error
-	path          string
-	once          sync.Once
+	ageHistogram      *prometheus.HistogramVec
+	sizeHistogram     *prometheus.HistogramVec
+	queueMessageGauge *prometheus.GaugeVec
+	readerFunc        func(io.Reader, chan<- prometheus.Metric) error
+	path              string
+	once              sync.Once
 }
 
 // CollectTextualShowqFromReader parses Postfix's textual showq output.
 func (s *Showq) collectTextualShowqFromReader(file io.Reader, ch chan<- prometheus.Metric) error {
 	err := s.collectTextualShowqFromScanner(file)
 
+	s.queueMessageGauge.Collect(ch)
 	s.sizeHistogram.Collect(ch)
 	s.ageHistogram.Collect(ch)
 	return err
@@ -41,11 +43,7 @@ func (s *Showq) collectTextualShowqFromReader(file io.Reader, ch chan<- promethe
 func (s *Showq) collectTextualShowqFromScanner(file io.Reader) error {
 	scanner := bufio.NewScanner(file)
 	scanner.Split(bufio.ScanLines)
-	// Initialize all queue buckets to zero.
-	for _, q := range []string{"active", "hold", "other"} {
-		s.sizeHistogram.WithLabelValues(q)
-		s.ageHistogram.WithLabelValues(q)
-	}
+	queueSizes := make(map[string]float64)
 
 	location, err := time.LoadLocation("Local")
 	if err != nil {
@@ -93,8 +91,12 @@ func (s *Showq) collectTextualShowqFromScanner(file io.Reader) error {
 			date = date.AddDate(-1, 0, 0)
 		}
 
+		queueSizes[queue]++
 		s.sizeHistogram.WithLabelValues(queue).Observe(size)
 		s.ageHistogram.WithLabelValues(queue).Observe(now.Sub(date).Seconds())
+	}
+	for q, count := range queueSizes {
+		s.queueMessageGauge.WithLabelValues(q).Set(count)
 	}
 	return scanner.Err()
 }
@@ -116,14 +118,18 @@ func ScanNullTerminatedEntries(data []byte, atEOF bool) (advance int, token []by
 
 // CollectBinaryShowqFromReader parses Postfix's binary showq format.
 func (s *Showq) collectBinaryShowqFromReader(file io.Reader, ch chan<- prometheus.Metric) error {
+	err := s.collectBinaryShowqFromScanner(file)
+	s.queueMessageGauge.Collect(ch)
+
+	s.sizeHistogram.Collect(ch)
+	s.ageHistogram.Collect(ch)
+	return err
+}
+
+func (s *Showq) collectBinaryShowqFromScanner(file io.Reader) error {
 	scanner := bufio.NewScanner(file)
 	scanner.Split(ScanNullTerminatedEntries)
-
-	// Initialize all queue buckets to zero.
-	for _, q := range []string{"active", "deferred", "hold", "incoming", "maildrop"} {
-		s.sizeHistogram.WithLabelValues(q)
-		s.ageHistogram.WithLabelValues(q)
-	}
+	queueSizes := make(map[string]float64)
 
 	now := float64(time.Now().UnixNano()) / 1e9
 	queue := "unknown"
@@ -144,6 +150,7 @@ func (s *Showq) collectBinaryShowqFromReader(file io.Reader, ch chan<- prometheu
 		case "queue_name":
 			// The name of the message queue.
 			queue = value
+			queueSizes[queue]++
 		case "size":
 			// Message size in bytes.
 			size, err := strconv.ParseFloat(value, 64)
@@ -161,8 +168,9 @@ func (s *Showq) collectBinaryShowqFromReader(file io.Reader, ch chan<- prometheu
 		}
 	}
 
-	s.sizeHistogram.Collect(ch)
-	s.ageHistogram.Collect(ch)
+	for q, count := range queueSizes {
+		s.queueMessageGauge.WithLabelValues(q).Set(count)
+	}
 	return scanner.Err()
 }
 
@@ -184,6 +192,14 @@ func (s *Showq) init(file io.Reader) {
 				Buckets:   []float64{1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9},
 			},
 			[]string{"queue"})
+		s.queueMessageGauge = prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: "postfix",
+				Name:      "showq_queue_depth",
+				Help:      "Number of messages in Postfix's message queue",
+			},
+			[]string{"queue"},
+		)
 
 		reader := bufio.NewReader(file)
 		buf, err := reader.Peek(128)
