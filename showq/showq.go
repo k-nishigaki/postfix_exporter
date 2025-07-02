@@ -123,6 +123,15 @@ func ScanNullTerminatedEntries(data []byte, atEOF bool) (advance int, token []by
 
 // CollectBinaryShowqFromReader parses Postfix's binary showq format.
 func (s *Showq) collectBinaryShowqFromReader(file io.Reader, ch chan<- prometheus.Metric) error {
+	err := s.collectBinaryShowqFromScanner(file)
+	s.queueMessageGauge.Collect(ch)
+
+	s.sizeHistogram.Collect(ch)
+	s.ageHistogram.Collect(ch)
+	return err
+}
+
+func (s *Showq) collectBinaryShowqFromScanner(file io.Reader) error {
 	scanner := bufio.NewScanner(file)
 	scanner.Split(ScanNullTerminatedEntries)
 	queueSizes := make(map[string]float64)
@@ -173,10 +182,6 @@ func (s *Showq) collectBinaryShowqFromReader(file io.Reader, ch chan<- prometheu
 	for q, count := range queueSizes {
 		s.queueMessageGauge.WithLabelValues(q).Set(count)
 	}
-	s.queueMessageGauge.Collect(ch)
-
-	s.sizeHistogram.Collect(ch)
-	s.ageHistogram.Collect(ch)
 	return scanner.Err()
 }
 
