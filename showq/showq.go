@@ -25,6 +25,7 @@ type Showq struct {
 	ageHistogram      *prometheus.HistogramVec
 	sizeHistogram     *prometheus.HistogramVec
 	queueMessageGauge *prometheus.GaugeVec
+	knownQueues       map[string]struct{}
 	readerFunc        func(io.Reader, chan<- prometheus.Metric) error
 	path              string
 	once              sync.Once
@@ -97,6 +98,7 @@ func (s *Showq) collectTextualShowqFromScanner(file io.Reader) error {
 	}
 	for q, count := range queueSizes {
 		s.queueMessageGauge.WithLabelValues(q).Set(count)
+		s.knownQueues[q] = struct{}{}
 	}
 	return scanner.Err()
 }
@@ -170,6 +172,12 @@ func (s *Showq) collectBinaryShowqFromScanner(file io.Reader) error {
 
 	for q, count := range queueSizes {
 		s.queueMessageGauge.WithLabelValues(q).Set(count)
+		s.knownQueues[q] = struct{}{}
+	}
+	for q := range s.knownQueues {
+		if _, seen := queueSizes[q]; !seen {
+			s.queueMessageGauge.WithLabelValues(q).Set(0)
+		}
 	}
 	return scanner.Err()
 }
@@ -200,6 +208,8 @@ func (s *Showq) init(file io.Reader) {
 			},
 			[]string{"queue"},
 		)
+
+		s.knownQueues = make(map[string]struct{})
 
 		reader := bufio.NewReader(file)
 		buf, err := reader.Peek(128)
