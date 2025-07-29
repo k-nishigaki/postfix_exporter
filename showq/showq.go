@@ -100,6 +100,13 @@ func (s *Showq) collectTextualShowqFromScanner(file io.Reader) error {
 		s.queueMessageGauge.WithLabelValues(q).Set(count)
 		s.knownQueues[q] = struct{}{}
 	}
+
+	// 追加：空だったキューにも 0 を送る
+	for q := range s.knownQueues {
+		if _, seen := queueSizes[q]; !seen {
+			s.queueMessageGauge.WithLabelValues(q).Set(0)
+		}
+	}
 	return scanner.Err()
 }
 
